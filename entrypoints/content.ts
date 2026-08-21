@@ -1,88 +1,42 @@
 /**
  * Interface da extensão dentro do WhatsApp Web.
  *
- * Só interface: nenhuma chamada ao Supabase acontece aqui. O content script
+ * Só interface. Nenhuma chamada ao Supabase acontece aqui: o content script
  * pergunta ao background e desenha a resposta, para o JWT do vendedor não
  * circular no contexto de uma página de terceiro.
  *
- * Tudo é montado dentro de um Shadow DOM. O WhatsApp tem CSS global agressivo
- * e troca de layout sem aviso; sem a barreira do shadow root, um `div { }`
- * deles desmonta o painel — e um `*` nosso desmontaria o deles.
+ * Nenhum seletor do WhatsApp aparece neste arquivo — quem lê o DOM deles é a
+ * WhatsAppAdapter, e só ela.
+ *
+ * Tudo é montado dentro de um Shadow DOM: o WhatsApp tem CSS global agressivo
+ * e troca de layout sem aviso; sem essa barreira, um `div { }` deles desmonta
+ * o painel — e um `*` nosso desmontaria o deles.
  */
-import type { EstadoSessao } from '../lib/mensagens';
-import { URL_CRM, URL_LOGIN } from '../lib/config';
+import { URL_CRM, URL_LOGIN, urlDoLead } from '../lib/config';
+import {
+  ORIGENS,
+  ORIGEM_PADRAO_EXTENSAO,
+  type EstadoSessao,
+  type LeadResumo,
+  type ResultadoConsulta,
+  type ResultadoCriacao,
+} from '../lib/mensagens';
+import {
+  ESTILOS,
+  bloco,
+  botao,
+  caixa,
+  campo,
+  etiquetas,
+  formatarTelefone,
+  link,
+  paragrafo,
+  selecao,
+} from '../lib/ui';
+import { WhatsAppAdapter, type ContatoAtual } from '../lib/whatsapp-adapter';
 
 const ID_RAIZ = 'bytech3-raiz';
 const CHAVE_ABERTO = 'painel_aberto';
-
-const ESTILOS = `
-  :host { all: initial; }
-  * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
-
-  .badge {
-    position: fixed; right: 16px; bottom: 16px; z-index: 2147483000;
-    display: flex; align-items: center; gap: 8px;
-    padding: 10px 14px; border: none; border-radius: 999px;
-    background: #059669; color: #fff;
-    font-size: 13px; font-weight: 600; line-height: 1;
-    box-shadow: 0 2px 12px rgba(0,0,0,.25); cursor: pointer;
-  }
-  .badge:hover { background: #047857; }
-  .badge[hidden] { display: none; }
-  .ponto { width: 8px; height: 8px; border-radius: 50%; background: #d1fae5; }
-
-  .painel {
-    position: fixed; top: 0; right: 0; z-index: 2147483000;
-    display: flex; flex-direction: column;
-    width: 320px; height: 100vh;
-    background: #fff; color: #111827;
-    border-left: 1px solid rgba(0,0,0,.12);
-    box-shadow: -2px 0 16px rgba(0,0,0,.14);
-    font-size: 14px; line-height: 1.5;
-  }
-  .painel[hidden] { display: none; }
-
-  .cabecalho {
-    display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    padding: 14px 16px; background: #059669; color: #fff;
-  }
-  .titulo { font-size: 14px; font-weight: 700; letter-spacing: .02em; }
-  .fechar {
-    border: none; background: transparent; color: #fff;
-    font-size: 20px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 6px;
-  }
-  .fechar:hover { background: rgba(255,255,255,.18); }
-
-  .corpo { flex: 1; overflow-y: auto; padding: 16px; }
-  .rotulo { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; }
-  .valor { font-size: 15px; font-weight: 600; color: #111827; margin-top: 2px; word-break: break-word; }
-  .bloco + .bloco { margin-top: 14px; }
-  .texto { color: #374151; }
-  .fraco { color: #6b7280; font-size: 13px; }
-
-  .aviso {
-    margin-top: 14px; padding: 10px 12px; border-radius: 8px;
-    background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; font-size: 13px;
-  }
-  .erro {
-    margin-top: 14px; padding: 10px 12px; border-radius: 8px;
-    background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; font-size: 13px;
-  }
-
-  .acao {
-    display: inline-block; margin-top: 14px; padding: 10px 14px;
-    border: none; border-radius: 8px; background: #059669; color: #fff;
-    font-size: 13px; font-weight: 600; text-decoration: none; cursor: pointer;
-  }
-  .acao:hover { background: #047857; }
-  .secundaria {
-    display: inline-block; margin-top: 10px; margin-left: 8px;
-    padding: 10px 14px; border-radius: 8px;
-    border: 1px solid rgba(0,0,0,.15); background: #fff; color: #374151;
-    font-size: 13px; font-weight: 600; text-decoration: none; cursor: pointer;
-  }
-  .secundaria:hover { background: #f9fafb; }
-`;
 
 const ROTULO_PAPEL: Record<string, string> = {
   admin: 'Administrador',
@@ -134,16 +88,221 @@ function montar() {
   const corpo = document.createElement('div');
   corpo.className = 'corpo';
 
+  const areaSessao = document.createElement('div');
+  areaSessao.className = 'secao';
+
+  const areaContato = document.createElement('div');
+  areaContato.className = 'secao';
+
+  corpo.append(areaSessao, areaContato);
   cabecalho.append(titulo, fechar);
   painel.append(cabecalho, corpo);
   shadow.append(estilo, badge, painel);
   document.body.appendChild(raiz);
 
+  // ---- estado local da interface ----
+  let contato: ContatoAtual = WhatsAppAdapter.getCurrentContact();
+  let conectado = false;
+
+  async function recarregarSessao() {
+    areaSessao.replaceChildren(paragrafo('Verificando seu login…', 'fraco'));
+    areaContato.replaceChildren();
+
+    const estado = await pedirSessao();
+    conectado = estado.estado === 'conectada';
+    desenharSessao(areaSessao, estado, recarregarSessao);
+
+    if (conectado) {
+      void atualizarContato();
+    }
+  }
+
+  async function atualizarContato() {
+    if (!conectado || painel.hidden) return;
+
+    if (!contato.temConversaAberta) {
+      areaContato.replaceChildren(
+        paragrafo('Abra uma conversa para ver o lead correspondente.', 'fraco'),
+      );
+      return;
+    }
+
+    if (contato.ehGrupo) {
+      areaContato.replaceChildren(
+        bloco('Conversa', contato.nome ?? 'Grupo'),
+        paragrafo(
+          'Esta é uma conversa em grupo. A extensão trabalha com contatos individuais.',
+          'fraco',
+        ),
+      );
+      return;
+    }
+
+    areaContato.replaceChildren(paragrafo('Consultando o CRM…', 'fraco'));
+
+    // Trocar de conversa enquanto a consulta está no ar é comum. Sem esta
+    // marca, a resposta da conversa antiga chegaria depois e desenharia o lead
+    // errado sobre a conversa nova — o tipo de erro que ninguém percebe até
+    // ligar para a pessoa errada.
+    const chavePedida = contato.chave;
+    const resultado = await pedirConsulta(contato);
+    if (contato.chave !== chavePedida) return;
+
+    if (resultado.estado === 'sessao-invalida') {
+      void recarregarSessao();
+      return;
+    }
+
+    desenharContato(resultado);
+  }
+
+  function desenharContato(resultado: ResultadoConsulta) {
+    areaContato.replaceChildren();
+
+    if (resultado.estado === 'e-lead') {
+      areaContato.append(...cartaoDoLead(resultado.lead));
+
+      if (resultado.correspondencia === 'nome') {
+        areaContato.append(
+          caixa(
+            'aviso',
+            'Encontrado pelo NOME, porque não foi possível ler o telefone desta conversa. ' +
+              'Confirme se é a mesma pessoa antes de usar a ficha.',
+          ),
+          botao('Não é essa pessoa — salvar como novo', abrirFormulario, 'secundaria'),
+        );
+      }
+      return;
+    }
+
+    if (resultado.estado === 'nao-e-lead') {
+      areaContato.append(
+        bloco('Contato', contato.nome ?? 'Sem nome'),
+        paragrafo('Este contato ainda não é lead na sua organização.', 'texto'),
+        botao('Salvar como lead', abrirFormulario),
+      );
+      return;
+    }
+
+    if (resultado.estado === 'grupo') {
+      areaContato.append(paragrafo('Conversa em grupo.', 'fraco'));
+      return;
+    }
+
+    if (resultado.estado === 'sem-conversa') {
+      areaContato.append(paragrafo('Abra uma conversa para ver o lead.', 'fraco'));
+      return;
+    }
+
+    // A sessão pode cair entre a abertura do painel e a consulta.
+    if (resultado.estado === 'sessao-invalida') {
+      void recarregarSessao();
+      return;
+    }
+
+    areaContato.append(
+      caixa('erro', resultado.mensagem),
+      botao('Tentar de novo', () => void atualizarContato(), 'secundaria'),
+    );
+  }
+
+  /**
+   * Formulário curto de criação.
+   *
+   * O telefone aparece SEMPRE, pré-preenchido quando a Adapter conseguiu lê-lo
+   * com confiança e vazio quando não conseguiu. É a confirmação do vendedor:
+   * lead sem telefone é quase inútil para follow-up, e telefone adivinhado é
+   * pior ainda.
+   */
+  function abrirFormulario() {
+    areaContato.replaceChildren();
+
+    const nome = campo('Nome', contato.nome ?? '', { placeholder: 'Nome do lead' });
+
+    const telefoneLido = contato.telefone ? formatarTelefone(contato.telefone) : '';
+    const telefone = campo('Telefone', telefoneLido, {
+      tipo: 'tel',
+      placeholder: '(11) 98765-4321',
+      dica: contato.telefone
+        ? 'Lido desta conversa. Confira antes de salvar.'
+        : 'Não foi possível ler o número desta conversa. Informe se souber — pode ficar em branco.',
+    });
+
+    const origem = selecao('Origem', ORIGENS, ORIGEM_PADRAO_EXTENSAO);
+
+    const acoes = document.createElement('div');
+    acoes.className = 'linha-acoes';
+
+    const salvar = botao('Salvar lead', () => void enviar());
+    const cancelar = botao('Cancelar', () => void atualizarContato(), 'secundaria');
+    acoes.append(salvar, cancelar);
+
+    const aviso = document.createElement('div');
+
+    areaContato.append(
+      nome.raiz,
+      telefone.raiz,
+      origem.raiz,
+      paragrafo('Você fica como responsável por este lead.', 'fraco'),
+      acoes,
+      aviso,
+    );
+
+    async function enviar() {
+      aviso.replaceChildren();
+
+      if (nome.entrada.value.trim().length < 2) {
+        aviso.replaceChildren(caixa('erro', 'Informe o nome do lead (mínimo 2 caracteres).'));
+        return;
+      }
+
+      salvar.disabled = true;
+      salvar.textContent = 'Salvando…';
+
+      const chavePedida = contato.chave;
+      const resultado = await pedirCriacao({
+        nome: nome.entrada.value.trim(),
+        telefone: telefone.entrada.value.trim() || null,
+        origem: origem.entrada.value,
+      });
+
+      // Se o vendedor trocou de conversa durante o salvamento, o lead foi
+      // criado do mesmo jeito — mas desenhar o resultado aqui colocaria a
+      // ficha dele sobre outra conversa.
+      if (contato.chave !== chavePedida) return;
+
+      salvar.disabled = false;
+      salvar.textContent = 'Salvar lead';
+
+      if (!resultado.ok) {
+        // Nunca fingir sucesso: a recusa do banco aparece com o motivo.
+        aviso.replaceChildren(caixa('erro', resultado.erro));
+        return;
+      }
+
+      areaContato.replaceChildren(
+        caixa('sucesso', 'Lead salvo.'),
+        ...cartaoDoLead(resultado.lead),
+      );
+
+      if (!resultado.entrouNoFunil) {
+        areaContato.append(
+          caixa(
+            'aviso',
+            'O lead foi salvo, mas não entrou em nenhum funil. Abra a ficha no CRM para ' +
+              'colocá-lo no quadro.',
+          ),
+        );
+      }
+    }
+  }
+
+  // ---- abrir / fechar ----
   async function abrir() {
     painel.hidden = false;
     badge.hidden = true;
     await guardarAberto(true);
-    void atualizarSessao(corpo);
+    void recarregarSessao();
   }
 
   async function fecharPainel() {
@@ -155,10 +314,15 @@ function montar() {
   badge.addEventListener('click', () => void abrir());
   fechar.addEventListener('click', () => void fecharPainel());
 
-  // Voltar para a aba depois de entrar no app deve refletir na hora, sem
-  // precisar clicar em "verificar de novo".
+  // Voltar para a aba depois de entrar no app deve refletir na hora.
   window.addEventListener('focus', () => {
-    if (!painel.hidden) void atualizarSessao(corpo);
+    if (!painel.hidden) void recarregarSessao();
+  });
+
+  // Troca de conversa: quem detecta é a Adapter.
+  WhatsAppAdapter.observarConversa((novo) => {
+    contato = novo;
+    void atualizarContato();
   });
 
   // O WhatsApp troca a árvore inteira ao navegar; se levar o painel junto,
@@ -168,11 +332,127 @@ function montar() {
   }, 5000);
 
   void (async () => {
-    if (await estavaAberto()) {
-      await abrir();
-    }
+    if (await estavaAberto()) await abrir();
   })();
 }
+
+function cartaoDoLead(lead: LeadResumo): HTMLElement[] {
+  const partes: HTMLElement[] = [bloco('Já é lead', lead.nome)];
+
+  if (lead.telefone) partes.push(bloco('Telefone', lead.telefone));
+  partes.push(bloco('Etapa', lead.etapa ?? 'Fora do funil'));
+  if (lead.funil) partes.push(bloco('Funil', lead.funil));
+  partes.push(bloco('Responsável', lead.responsavel ?? 'Sem responsável'));
+
+  if (lead.tags.length > 0) {
+    const area = document.createElement('div');
+    area.className = 'bloco';
+
+    const rotulo = document.createElement('div');
+    rotulo.className = 'rotulo';
+    rotulo.textContent = 'Tags';
+
+    area.append(rotulo, etiquetas(lead.tags));
+    partes.push(area);
+  }
+
+  partes.push(link('Abrir ficha no CRM', urlDoLead(lead.id)));
+  return partes;
+}
+
+function desenharSessao(area: HTMLElement, estado: EstadoSessao, recarregar: () => void) {
+  area.replaceChildren();
+
+  if (estado.estado === 'conectada') {
+    area.append(bloco('Organização', estado.organizacao.nome));
+
+    const acesso = document.createElement('p');
+    acesso.className = 'fraco';
+    acesso.textContent = `${estado.email ?? 'vendedor'} · ${
+      ROTULO_PAPEL[estado.organizacao.papel] ?? estado.organizacao.papel
+    }`;
+    area.append(acesso);
+
+    if (!estado.organizacao.acesso_ativo) {
+      area.append(
+        caixa(
+          'aviso',
+          'O período de teste desta organização terminou. Você continua consultando, mas ' +
+            'o servidor recusa gravações.',
+        ),
+      );
+    }
+    return;
+  }
+
+  if (estado.estado === 'sem-sessao' || estado.estado === 'expirada') {
+    const primeiraVez = estado.estado === 'sem-sessao';
+
+    area.append(
+      paragrafo(
+        primeiraVez
+          ? 'Entre no ByTech3 para usar a extensão aqui no WhatsApp.'
+          : 'Sua sessão expirou. Abra o ByTech3 para reconectar — basta carregar a página.',
+      ),
+      link(primeiraVez ? 'Entrar no ByTech3' : 'Reconectar', primeiraVez ? URL_LOGIN : URL_CRM),
+      botao('Verificar de novo', recarregar, 'secundaria'),
+      paragrafo(
+        'A extensão usa o mesmo login do site. Nada é salvo enquanto você não estiver conectado.',
+        'fraco',
+      ),
+    );
+    return;
+  }
+
+  if (estado.estado === 'sem-organizacao') {
+    area.append(
+      paragrafo('Sua conta ainda não faz parte de uma organização.'),
+      link('Concluir cadastro', URL_CRM),
+      botao('Verificar de novo', recarregar, 'secundaria'),
+    );
+    return;
+  }
+
+  area.append(caixa('erro', estado.mensagem), botao('Tentar de novo', recarregar, 'secundaria'));
+}
+
+// ---- conversa com o background ----
+
+async function pedirSessao(): Promise<EstadoSessao> {
+  try {
+    return (await browser.runtime.sendMessage({ tipo: 'sessao/estado' })) as EstadoSessao;
+  } catch {
+    return {
+      estado: 'erro',
+      mensagem: 'A extensão precisa ser recarregada. Feche e abra o WhatsApp Web.',
+    };
+  }
+}
+
+async function pedirConsulta(contato: ContatoAtual): Promise<ResultadoConsulta> {
+  try {
+    return (await browser.runtime.sendMessage({
+      tipo: 'lead/consultar',
+      contato: { nome: contato.nome, telefone: contato.telefone },
+    })) as ResultadoConsulta;
+  } catch {
+    return { estado: 'erro', mensagem: 'Não foi possível consultar o CRM. Tente de novo.' };
+  }
+}
+
+async function pedirCriacao(dados: {
+  nome: string;
+  telefone: string | null;
+  origem: string;
+}): Promise<ResultadoCriacao> {
+  try {
+    return (await browser.runtime.sendMessage({ tipo: 'lead/criar', dados })) as ResultadoCriacao;
+  } catch {
+    return { ok: false, erro: 'Não foi possível salvar o lead. Tente de novo.' };
+  }
+}
+
+// ---- preferência de painel aberto ----
 
 async function estavaAberto(): Promise<boolean> {
   try {
@@ -189,135 +469,4 @@ async function guardarAberto(aberto: boolean): Promise<void> {
   } catch {
     // Preferência de interface. Perder isso não quebra nada.
   }
-}
-
-async function atualizarSessao(corpo: HTMLElement) {
-  corpo.replaceChildren(paragrafo('Verificando seu login…', 'fraco'));
-
-  let estado: EstadoSessao;
-  try {
-    estado = (await browser.runtime.sendMessage({ tipo: 'sessao/estado' })) as EstadoSessao;
-  } catch {
-    estado = {
-      estado: 'erro',
-      mensagem: 'A extensão precisa ser recarregada. Feche e abra o WhatsApp Web.',
-    };
-  }
-
-  desenharSessao(corpo, estado);
-}
-
-function desenharSessao(corpo: HTMLElement, estado: EstadoSessao) {
-  corpo.replaceChildren();
-
-  if (estado.estado === 'conectada') {
-    corpo.append(
-      bloco('Conectado como', estado.email ?? 'vendedor'),
-      bloco('Organização', estado.organizacao.nome),
-      bloco('Seu acesso', ROTULO_PAPEL[estado.organizacao.papel] ?? estado.organizacao.papel),
-    );
-
-    if (!estado.organizacao.acesso_ativo) {
-      corpo.append(
-        caixa(
-          'aviso',
-          'O período de teste desta organização terminou. Você continua vendo os dados, ' +
-            'mas gravações são recusadas pelo servidor.',
-        ),
-      );
-    }
-
-    corpo.append(
-      link('Abrir o CRM', URL_CRM, 'acao'),
-      paragrafo(
-        estado.organizacao.papel === 'vendedor'
-          ? 'Você vê os seus leads e os que estão sem responsável.'
-          : 'Você vê todos os leads da organização.',
-        'fraco',
-      ),
-    );
-    return;
-  }
-
-  if (estado.estado === 'sem-sessao' || estado.estado === 'expirada') {
-    const primeiraVez = estado.estado === 'sem-sessao';
-
-    corpo.append(
-      paragrafo(
-        primeiraVez
-          ? 'Entre no ByTech3 para usar a extensão aqui no WhatsApp.'
-          : 'Sua sessão expirou. Abra o ByTech3 para reconectar — é só carregar a página.',
-        'texto',
-      ),
-      link(primeiraVez ? 'Entrar no ByTech3' : 'Reconectar', primeiraVez ? URL_LOGIN : URL_CRM, 'acao'),
-      botaoVerificar(corpo),
-      paragrafo(
-        'A extensão usa o mesmo login do site. Nada é salvo enquanto você não estiver conectado.',
-        'fraco',
-      ),
-    );
-    return;
-  }
-
-  if (estado.estado === 'sem-organizacao') {
-    corpo.append(
-      paragrafo('Sua conta ainda não faz parte de uma organização.', 'texto'),
-      link('Concluir cadastro', URL_CRM, 'acao'),
-      botaoVerificar(corpo),
-    );
-    return;
-  }
-
-  corpo.append(caixa('erro', estado.mensagem), botaoVerificar(corpo));
-}
-
-function botaoVerificar(corpo: HTMLElement): HTMLButtonElement {
-  const botao = document.createElement('button');
-  botao.type = 'button';
-  botao.className = 'secundaria';
-  botao.textContent = 'Verificar de novo';
-  botao.addEventListener('click', () => void atualizarSessao(corpo));
-  return botao;
-}
-
-function bloco(rotulo: string, valor: string): HTMLElement {
-  const caixa = document.createElement('div');
-  caixa.className = 'bloco';
-
-  const titulo = document.createElement('div');
-  titulo.className = 'rotulo';
-  titulo.textContent = rotulo;
-
-  const conteudo = document.createElement('div');
-  conteudo.className = 'valor';
-  conteudo.textContent = valor;
-
-  caixa.append(titulo, conteudo);
-  return caixa;
-}
-
-function paragrafo(texto: string, classe: string): HTMLElement {
-  const elemento = document.createElement('p');
-  elemento.className = classe;
-  elemento.style.margin = '0';
-  elemento.style.marginTop = '10px';
-  elemento.textContent = texto;
-  return elemento;
-}
-
-function caixa(classe: 'aviso' | 'erro', texto: string): HTMLElement {
-  const elemento = document.createElement('div');
-  elemento.className = classe;
-  elemento.textContent = texto;
-  return elemento;
-}
-
-function link(texto: string, url: string, classe: string): HTMLAnchorElement {
-  const elemento = document.createElement('a');
-  elemento.className = classe;
-  elemento.href = url;
-  elemento.target = '_blank';
-  elemento.rel = 'noopener noreferrer';
-  elemento.textContent = texto;
-  return elemento;
 }

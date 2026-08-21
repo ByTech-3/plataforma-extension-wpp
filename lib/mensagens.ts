@@ -6,7 +6,39 @@
  * carregado no contexto de uma página de terceiro.
  */
 
-export type Mensagem = { tipo: 'sessao/estado' };
+/** Lista fixa do banco (`check` em `leads.origem`). Divergir daqui = INSERT recusado. */
+export const ORIGENS = [
+  'WhatsApp direto',
+  'Instagram',
+  'Facebook',
+  'Google',
+  'Indicação',
+  'Campanha específica',
+  'Site',
+  'Outro',
+  'Não identificado',
+] as const;
+
+export type Origem = (typeof ORIGENS)[number];
+
+export const ORIGEM_PADRAO_EXTENSAO: Origem = 'WhatsApp direto';
+
+export type Mensagem =
+  | { tipo: 'sessao/estado' }
+  | { tipo: 'lead/consultar'; contato: ContatoConsultado }
+  | { tipo: 'lead/criar'; dados: NovoLead };
+
+export type ContatoConsultado = {
+  nome: string | null;
+  /** Só dígitos. `null` quando a Adapter não conseguiu ler com confiança. */
+  telefone: string | null;
+};
+
+export type NovoLead = {
+  nome: string;
+  telefone: string | null;
+  origem: string;
+};
 
 export type Organizacao = {
   id: string;
@@ -29,3 +61,36 @@ export type EstadoSessao =
       email: string | null;
       organizacao: Organizacao;
     };
+
+export type TagDoLead = { id: string; nome: string; cor: string | null };
+
+export type LeadResumo = {
+  id: string;
+  nome: string;
+  telefone: string | null;
+  responsavel: string | null;
+  funil: string | null;
+  etapa: string | null;
+  tags: TagDoLead[];
+};
+
+/**
+ * Como o lead foi reconhecido.
+ *
+ *  `telefone` — mesmo número. É identidade, não palpite.
+ *  `nome`     — mesmo nome, sem telefone para conferir. É PISTA: pode ser
+ *               homônimo, e por isso a tela pede confirmação em vez de afirmar.
+ */
+export type TipoCorrespondencia = 'telefone' | 'nome';
+
+export type ResultadoConsulta =
+  | { estado: 'sem-conversa' }
+  | { estado: 'grupo' }
+  | { estado: 'sessao-invalida' }
+  | { estado: 'erro'; mensagem: string }
+  | { estado: 'nao-e-lead' }
+  | { estado: 'e-lead'; lead: LeadResumo; correspondencia: TipoCorrespondencia };
+
+export type ResultadoCriacao =
+  | { ok: true; lead: LeadResumo; entrouNoFunil: boolean }
+  | { ok: false; erro: string };

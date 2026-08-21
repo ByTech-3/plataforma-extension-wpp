@@ -5,7 +5,13 @@
  * O JWT do vendedor não sai daqui: não é injetado na página do WhatsApp.
  */
 import { conferirConfiguracao } from '../lib/config';
-import type { EstadoSessao, Mensagem } from '../lib/mensagens';
+import { consultarLead, criarLead } from '../lib/leads';
+import type {
+  EstadoSessao,
+  Mensagem,
+  ResultadoConsulta,
+  ResultadoCriacao,
+} from '../lib/mensagens';
 import { estaExpirada, lerSessaoDoApp } from '../lib/sessao';
 import { clienteComSessao } from '../lib/supabase';
 
@@ -70,10 +76,43 @@ async function obterEstadoSessao(): Promise<EstadoSessao> {
   };
 }
 
+/**
+ * Sessão pronta para uso: cliente autenticado + organização.
+ *
+ * Toda operação de dados passa por aqui, então nenhuma delas roda com sessão
+ * ausente ou vencida — e a interface recebe sempre um estado que sabe desenhar.
+ */
+async function comSessao<T>(
+  aoConectar: (
+    supabase: ReturnType<typeof clienteComSessao>,
+    organizationId: string,
+    usuarioId: string,
+  ) => Promise<T>,
+  aoFalhar: (motivo: 'sessao' | 'erro', mensagem: string) => T,
+): Promise<T> {
+  const estado = await obterEstadoSessao();
+
+  if (estado.estado !== 'conectada') {
+    if (estado.estado === 'erro') return aoFalhar('erro', estado.mensagem);
+    return aoFalhar('sessao', 'Sua sessão expirou. Abra o ByTech3 para reconectar.');
+  }
+
+  const sessao = await lerSessaoDoApp();
+  if (!sessao?.usuario_id) {
+    return aoFalhar('sessao', 'Sua sessão expirou. Abra o ByTech3 para reconectar.');
+  }
+
+  return aoConectar(
+    clienteComSessao(sessao.access_token),
+    estado.organizacao.id,
+    sessao.usuario_id,
+  );
+}
+
 export default defineBackground(() => {
   browser.runtime.onMessage.addListener((mensagem: Mensagem, _remetente, responder) => {
+    // `return true` mantém o canal aberto para a resposta assíncrona.
     if (mensagem?.tipo === 'sessao/estado') {
-      // `return true` mantém o canal aberto para a resposta assíncrona.
       obterEstadoSessao()
         .then(responder)
         .catch((erro) => {
@@ -82,6 +121,44 @@ export default defineBackground(() => {
             estado: 'erro',
             mensagem: 'Não foi possível verificar seu login. Tente de novo.',
           } satisfies EstadoSessao);
+        });
+      return true;
+    }
+
+    if (mensagem?.tipo === 'lead/consultar') {
+      const contato = mensagem.contato;
+
+      comSessao<ResultadoConsulta>(
+        (supabase, organizationId) => consultarLead(supabase, organizationId, contato),
+        (motivo, texto) =>
+          motivo === 'sessao' ? { estado: 'sessao-invalida' } : { estado: 'erro', mensagem: texto },
+      )
+        .then(responder)
+        .catch((erro) => {
+          console.error('[ByTech3] Falha ao consultar o lead.', erro);
+          responder({
+            estado: 'erro',
+            mensagem: 'Não foi possível consultar o CRM. Tente de novo.',
+          } satisfies ResultadoConsulta);
+        });
+      return true;
+    }
+
+    if (mensagem?.tipo === 'lead/criar') {
+      const dados = mensagem.dados;
+
+      comSessao<ResultadoCriacao>(
+        (supabase, organizationId, usuarioId) =>
+          criarLead(supabase, organizationId, usuarioId, dados),
+        (_motivo, texto) => ({ ok: false, erro: texto }),
+      )
+        .then(responder)
+        .catch((erro) => {
+          console.error('[ByTech3] Falha ao salvar o lead.', erro);
+          responder({
+            ok: false,
+            erro: 'Não foi possível salvar o lead. Tente de novo.',
+          } satisfies ResultadoCriacao);
         });
       return true;
     }
