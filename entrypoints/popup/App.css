@@ -1,42 +1,97 @@
-#root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+.painel {
+  width: 300px;
+  background: #fff;
+  color: #111827;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #54bc4ae0);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+.cabecalho {
+  padding: 12px 16px;
+  background: #059669;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
 }
 
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+.corpo {
+  padding: 16px;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
+.corpo p {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: #374151;
 }
 
-.card {
-  padding: 2em;
+.bloco + .bloco {
+  margin-top: 12px;
 }
 
-.read-the-docs {
-  color: #888;
+.rotulo {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #6b7280;
+}
+
+.valor {
+  margin-top: 2px;
+  font-size: 14px;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.fraco {
+  color: #6b7280;
+}
+
+.aviso {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 12px;
+}
+
+.erro {
+  padding: 10px 12px;
+  border: 1px solid #fca5a5;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 12px;
+}
+
+.acao,
+.secundaria {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 9px 13px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.acao {
+  border: none;
+  background: #059669;
+  color: #fff;
+}
+
+.acao:hover {
+  background: #047857;
+}
+
+.secundaria {
+  margin-left: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  background: #fff;
+  color: #374151;
+}
+
+.secundaria:hover {
+  background: #f9fafb;
 }
