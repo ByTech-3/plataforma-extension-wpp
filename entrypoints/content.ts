@@ -420,8 +420,23 @@ function desenharSessao(area: HTMLElement, estado: EstadoSessao, recarregar: () 
 
 async function pedirSessao(): Promise<EstadoSessao> {
   try {
-    return (await browser.runtime.sendMessage({ tipo: 'sessao/estado' })) as EstadoSessao;
-  } catch {
+    const estado = (await browser.runtime.sendMessage({
+      tipo: 'sessao/estado',
+    })) as EstadoSessao;
+
+    // O console do service worker do MV3 perde o histórico quando ele
+    // hiberna. Este console — o da página — fica aberto, então é aqui que o
+    // rastro é capturável de verdade.
+    console.info(
+      `[ByTech3] sessão: ${estado?.estado ?? 'resposta vazia'}` +
+        (estado?.diagnostico?.length
+          ? `\n${estado.diagnostico.map((linha) => `  · ${linha}`).join('\n')}`
+          : ''),
+    );
+
+    return estado;
+  } catch (erro) {
+    console.error('[ByTech3] o service worker não respondeu.', erro);
     return {
       estado: 'erro',
       mensagem: 'A extensão precisa ser recarregada. Feche e abra o WhatsApp Web.',

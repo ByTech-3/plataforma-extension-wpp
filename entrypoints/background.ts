@@ -32,36 +32,50 @@ type LinhaContexto = {
 async function obterEstadoSessao(): Promise<EstadoSessao> {
   const erroConfiguracao = conferirConfiguracao();
   if (erroConfiguracao) {
-    return { estado: 'erro', mensagem: erroConfiguracao };
+    return { estado: 'erro', mensagem: erroConfiguracao, diagnostico: [erroConfiguracao] };
   }
 
-  const sessao = await lerSessaoDoApp();
-  if (!sessao) return { estado: 'sem-sessao' };
-  if (estaExpirada(sessao)) return { estado: 'expirada' };
+  const { sessao, diagnostico } = await lerSessaoDoApp();
+
+  // O console do service worker do MV3 some quando ele hiberna. Registrar aqui
+  // ajuda quem está com o inspetor aberto; a cópia que vai na resposta cobre
+  // quem não estava.
+  console.info('[ByTech3] leitura da sessão:\n' + diagnostico.map((l) => `  · ${l}`).join('\n'));
+
+  if (!sessao) return { estado: 'sem-sessao', diagnostico };
+
+  if (estaExpirada(sessao)) {
+    diagnostico.push('token vencido (ou vencendo em menos de 60s)');
+    return { estado: 'expirada', diagnostico };
+  }
 
   const supabase = clienteComSessao(sessao.access_token);
   const { data, error } = await supabase.rpc('meu_contexto');
 
   if (error) {
+    diagnostico.push(`meu_contexto() falhou: ${error.code ?? 'sem código'} — ${error.message}`);
+
     // 401/PGRST301 = o Supabase recusou o token. Do ponto de vista do
     // vendedor isso é "precisa entrar de novo", não erro técnico.
     const recusado =
       error.code === 'PGRST301' ||
       /jwt|token|expired|unauthorized/i.test(`${error.message} ${error.code ?? ''}`);
 
-    if (recusado) return { estado: 'expirada' };
+    if (recusado) return { estado: 'expirada', diagnostico };
 
     return {
       estado: 'erro',
       mensagem: 'Não foi possível falar com o servidor. Tente de novo em instantes.',
+      diagnostico,
     };
   }
 
   const contexto = (data ?? []) as LinhaContexto[];
-  const organizacao = contexto[0];
+  diagnostico.push(`meu_contexto() devolveu ${contexto.length} organização(ões)`);
 
+  const organizacao = contexto[0];
   if (!organizacao) {
-    return { estado: 'sem-organizacao', email: sessao.email };
+    return { estado: 'sem-organizacao', email: sessao.email, diagnostico };
   }
 
   return {
@@ -73,6 +87,7 @@ async function obterEstadoSessao(): Promise<EstadoSessao> {
       papel: organizacao.papel,
       acesso_ativo: organizacao.acesso_ativo,
     },
+    diagnostico,
   };
 }
 
@@ -97,7 +112,7 @@ async function comSessao<T>(
     return aoFalhar('sessao', 'Sua sessão expirou. Abra o ByTech3 para reconectar.');
   }
 
-  const sessao = await lerSessaoDoApp();
+  const { sessao } = await lerSessaoDoApp();
   if (!sessao?.usuario_id) {
     return aoFalhar('sessao', 'Sua sessão expirou. Abra o ByTech3 para reconectar.');
   }

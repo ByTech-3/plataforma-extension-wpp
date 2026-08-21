@@ -51,7 +51,7 @@ export type Organizacao = {
  * Estados possíveis da sessão. `sem-sessao` e `expirada` são situações normais
  * do produto, com convite para entrar no app — não são erro.
  */
-export type EstadoSessao =
+export type EstadoSessao = (
   | { estado: 'sem-sessao' }
   | { estado: 'expirada' }
   | { estado: 'sem-organizacao'; email: string | null }
@@ -60,7 +60,19 @@ export type EstadoSessao =
       estado: 'conectada';
       email: string | null;
       organizacao: Organizacao;
-    };
+    }
+) & {
+  /**
+   * Rastro do que aconteceu na leitura da sessão, para diagnóstico.
+   *
+   * Vai junto da resposta de propósito: o console do service worker do
+   * Manifest V3 perde o histórico quando ele hiberna, então o mesmo rastro é
+   * registrado também no console da página, que fica aberto.
+   *
+   * Nunca contém valor de cookie nem token — só nomes, contagens e tamanhos.
+   */
+  diagnostico?: string[];
+};
 
 export type TagDoLead = { id: string; nome: string; cor: string | null };
 
