@@ -17,6 +17,7 @@ import {
   ORIGENS,
   ORIGEM_PADRAO_EXTENSAO,
   type EstadoSessao,
+  type Mensagem,
   type LeadResumo,
   type ResultadoConsulta,
   type ResultadoCriacao,
@@ -107,18 +108,43 @@ function montar() {
   // ---- estado local da interface ----
   let contato: ContatoAtual = WhatsAppAdapter.getCurrentContact();
   let conectado = false;
+  let descarregada = false;
+  let pararObservador: (() => void) | null = null;
 
   async function recarregarSessao() {
+    if (descarregada) return;
+
     areaSessao.replaceChildren(paragrafo('Verificando seu login…', 'fraco'));
     areaContato.replaceChildren();
 
     const estado = await pedirSessao();
+    if (estado === 'descarregada') return;
+
     conectado = estado.estado === 'conectada';
     desenharSessao(areaSessao, estado, recarregarSessao);
 
     if (conectado) {
       void atualizarContato();
     }
+  }
+
+  /**
+   * Extensão atualizada com a aba aberta. Uma tela só, com a saída à mão —
+   * e o observador de conversa parado, para não insistir num canal morto.
+   */
+  function mostrarDescarregada() {
+    descarregada = true;
+    pararObservador?.();
+
+    painel.hidden = false;
+    badge.hidden = true;
+
+    areaSessao.replaceChildren(
+      caixa('aviso', 'A extensão foi atualizada e esta aba ficou para trás.'),
+      paragrafo('Recarregue a página para voltar a usar o painel. Nada foi perdido.', 'texto'),
+      botao('Recarregar a página', () => window.location.reload()),
+    );
+    areaContato.replaceChildren();
   }
 
   async function atualizarContato() {
@@ -150,6 +176,7 @@ function montar() {
     // ligar para a pessoa errada.
     const chavePedida = contato.chave;
     const resultado = await pedirConsulta(contato);
+    if (resultado === 'descarregada') return;
     if (contato.chave !== chavePedida) return;
 
     if (resultado.estado === 'sessao-invalida') {
@@ -273,6 +300,7 @@ function montar() {
       // Se o vendedor trocou de conversa durante o salvamento, o lead foi
       // criado do mesmo jeito — mas desenhar o resultado aqui colocaria a
       // ficha dele sobre outra conversa.
+      if (resultado === 'descarregada') return;
       if (contato.chave !== chavePedida) return;
 
       salvar.disabled = false;
@@ -327,15 +355,22 @@ function montar() {
     if (!painel.hidden) void recarregarSessao();
   });
 
+  // Qualquer mensagem que falhe por extensão descarregada cai aqui, uma vez só.
+  registrarDescarregamento(mostrarDescarregada);
+
   // Troca de conversa: quem detecta é a Adapter.
-  WhatsAppAdapter.observarConversa((novo) => {
+  pararObservador = WhatsAppAdapter.observarConversa((novo) => {
     contato = novo;
     void atualizarContato();
   });
 
   // O WhatsApp troca a árvore inteira ao navegar; se levar o painel junto,
-  // remonta.
-  setInterval(() => {
+  // remonta. Depois de descarregada, remontar não adianta: o canal morreu.
+  const vigia = setInterval(() => {
+    if (descarregada) {
+      clearInterval(vigia);
+      return;
+    }
     if (!document.getElementById(ID_RAIZ)) montar();
   }, 5000);
 
@@ -426,39 +461,77 @@ function desenharSessao(area: HTMLElement, estado: EstadoSessao, recarregar: () 
 
 // ---- conversa com o background ----
 
-async function pedirSessao(): Promise<EstadoSessao> {
+/**
+ * A extensão foi descarregada por baixo desta página?
+ *
+ * Acontece toda vez que a extensão é atualizada, recarregada ou desinstalada
+ * com a aba aberta — inclusive numa atualização automática pela Chrome Web
+ * Store, no meio do expediente do cliente. O content script antigo continua na
+ * página, mas o canal com o service worker morreu para sempre: `sendMessage`
+ * falha com "Extension context invalidated".
+ *
+ * NÃO é falha para "tentar de novo": nenhuma tentativa vai funcionar até a
+ * página ser recarregada. Dizer "tente de novo" faria o vendedor repetir um
+ * salvamento que nunca vai acontecer.
+ */
+function extensaoDescarregada(erro: unknown): boolean {
+  if (!browser.runtime?.id) return true;
+  const mensagem = erro instanceof Error ? erro.message : String(erro ?? '');
+  return /context invalidated|receiving end does not exist|message port closed/i.test(mensagem);
+}
+
+/** Avisado uma vez só: o observador de conversa dispararia isto sem parar. */
+let aoDescarregar: (() => void) | null = null;
+let jaAvisouDescarregada = false;
+
+function registrarDescarregamento(aoAcontecer: () => void) {
+  aoDescarregar = aoAcontecer;
+}
+
+async function enviar<T>(mensagem: Mensagem, aoFalhar: T): Promise<T | 'descarregada'> {
   try {
-    return (await browser.runtime.sendMessage({ tipo: 'sessao/estado' })) as EstadoSessao;
+    return (await browser.runtime.sendMessage(mensagem)) as T;
   } catch (erro) {
+    if (extensaoDescarregada(erro)) {
+      if (!jaAvisouDescarregada) {
+        jaAvisouDescarregada = true;
+        console.warn('[ByTech3] extensão atualizada; esta aba precisa ser recarregada.');
+        aoDescarregar?.();
+      }
+      return 'descarregada';
+    }
+
     console.error('[ByTech3] o service worker não respondeu.', erro);
-    return {
-      estado: 'erro',
-      mensagem: 'A extensão precisa ser recarregada. Feche e abra o WhatsApp Web.',
-    };
+    return aoFalhar;
   }
 }
 
-async function pedirConsulta(contato: ContatoAtual): Promise<ResultadoConsulta> {
-  try {
-    return (await browser.runtime.sendMessage({
+async function pedirSessao(): Promise<EstadoSessao | 'descarregada'> {
+  return enviar<EstadoSessao>({ tipo: 'sessao/estado' }, {
+    estado: 'erro',
+    mensagem: 'Não foi possível verificar seu login. Tente de novo.',
+  });
+}
+
+async function pedirConsulta(contato: ContatoAtual): Promise<ResultadoConsulta | 'descarregada'> {
+  return enviar<ResultadoConsulta>(
+    {
       tipo: 'lead/consultar',
       contato: { nome: contato.nome, telefone: contato.telefone },
-    })) as ResultadoConsulta;
-  } catch {
-    return { estado: 'erro', mensagem: 'Não foi possível consultar o CRM. Tente de novo.' };
-  }
+    },
+    { estado: 'erro', mensagem: 'Não foi possível consultar o CRM. Tente de novo.' },
+  );
 }
 
 async function pedirCriacao(dados: {
   nome: string;
   telefone: string | null;
   origem: string;
-}): Promise<ResultadoCriacao> {
-  try {
-    return (await browser.runtime.sendMessage({ tipo: 'lead/criar', dados })) as ResultadoCriacao;
-  } catch {
-    return { ok: false, erro: 'Não foi possível salvar o lead. Tente de novo.' };
-  }
+}): Promise<ResultadoCriacao | 'descarregada'> {
+  return enviar<ResultadoCriacao>({ tipo: 'lead/criar', dados }, {
+    ok: false,
+    erro: 'Não foi possível salvar o lead. Tente de novo.',
+  });
 }
 
 // ---- preferência de painel aberto ----
