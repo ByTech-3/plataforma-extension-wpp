@@ -19,7 +19,7 @@
  *
  * Este módulo roda SÓ no background: é lá que o JWT deve viver.
  */
-import { APP_URL } from './config';
+import { APP_URL, SUPABASE_URL } from './config';
 
 export type SessaoDoApp = {
   access_token: string;
@@ -39,6 +39,104 @@ const NOME_COOKIE = /^sb-.+-auth-token(\.(\d+))?$/;
 const PREFIXO_BASE64 = 'base64-';
 
 type CookieLido = { name: string; value: string; domain?: string; path?: string };
+
+/**
+ * A permissão está DECLARADA no manifest e CONCEDIDA em runtime?
+ *
+ * São coisas diferentes, e a diferença é invisível no comportamento: com a
+ * permissão de host retida, `chrome.cookies` continua existindo e o `getAll`
+ * devolve lista vazia — sem erro, sem aviso. É exatamente o sintoma que
+ * estamos investigando, então vale medir em vez de supor.
+ */
+async function conferirPermissoes(diagnostico: string[]): Promise<void> {
+  const manifest = browser.runtime.getManifest() as {
+    permissions?: string[];
+    host_permissions?: string[];
+  };
+
+  diagnostico.push(
+    `manifest carregado: permissions=[${(manifest.permissions ?? []).join(', ')}] | ` +
+      `host_permissions=[${(manifest.host_permissions ?? []).join(', ')}]`,
+  );
+
+  if (!browser.permissions?.contains) {
+    diagnostico.push('browser.permissions indisponível — não dá para conferir concessão');
+    return;
+  }
+
+  // Separadas de propósito: juntas, um `false` não diria QUAL das duas faltou.
+  try {
+    const api = await browser.permissions.contains({ permissions: ['cookies'] });
+    diagnostico.push(`permissão de API "cookies" concedida: ${api}`);
+  } catch (erro) {
+    diagnostico.push(`contains(cookies) LANÇOU: ${erro instanceof Error ? erro.message : erro}`);
+  }
+
+  try {
+    const host = await browser.permissions.contains({ origins: [`${APP_URL}/*`] });
+    diagnostico.push(`permissão de host "${APP_URL}/*" concedida: ${host}`);
+  } catch (erro) {
+    diagnostico.push(`contains(origins) LANÇOU: ${erro instanceof Error ? erro.message : erro}`);
+  }
+}
+
+/**
+ * Procura o cookie pelo nome exato, deduzido da URL do Supabase
+ * (`https://<ref>.supabase.co` -> `sb-<ref>-auth-token`).
+ *
+ * `getAll` e `get` percorrem caminhos diferentes na implementação do Chrome.
+ * Se a busca por nome achar o que a listagem não achou, o problema é de
+ * enumeração; se nenhuma das duas achar, é de acesso ao pote.
+ */
+async function sondarNomeExato(diagnostico: string[]): Promise<void> {
+  const ref = SUPABASE_URL.match(/^https?:\/\/([^.]+)\./)?.[1];
+  if (!ref) {
+    diagnostico.push(`não foi possível deduzir o ref do projeto a partir de ${SUPABASE_URL}`);
+    return;
+  }
+
+  const base = `sb-${ref}-auth-token`;
+
+  for (const nome of [base, `${base}.0`]) {
+    try {
+      const cookie = await browser.cookies.get({ url: APP_URL, name: nome });
+      diagnostico.push(
+        `get(name=${nome}): ${cookie ? `ENCONTRADO (${cookie.value?.length ?? 0} chars)` : 'null'}`,
+      );
+    } catch (erro) {
+      diagnostico.push(
+        `get(name=${nome}) LANÇOU: ${erro instanceof Error ? erro.message : String(erro)}`,
+      );
+    }
+  }
+}
+
+/** Potes de cookies visíveis. Mais de um = perfis/contextos distintos. */
+async function listarCookieStores(diagnostico: string[]): Promise<string[]> {
+  if (!browser.cookies?.getAllCookieStores) {
+    diagnostico.push('getAllCookieStores indisponível');
+    return [];
+  }
+
+  try {
+    const stores = (await browser.cookies.getAllCookieStores()) as {
+      id: string;
+      tabIds: number[];
+    }[];
+
+    diagnostico.push(
+      `cookie stores: ${stores.length} — ` +
+        stores.map((store) => `id=${store.id} (${store.tabIds?.length ?? 0} aba(s))`).join(', '),
+    );
+
+    return stores.map((store) => store.id);
+  } catch (erro) {
+    diagnostico.push(
+      `getAllCookieStores LANÇOU: ${erro instanceof Error ? erro.message : String(erro)}`,
+    );
+    return [];
+  }
+}
 
 /** base64url -> texto, respeitando UTF-8 (nome com acento não pode quebrar). */
 function deBase64Url(valor: string): string {
@@ -112,6 +210,27 @@ async function buscarCookies(diagnostico: string[]): Promise<CookieLido[] | null
   })();
 
   diagnostico.push(`APP_URL = ${APP_URL}${hostname ? ` (host ${hostname})` : ' (URL INVÁLIDA)'}`);
+
+  await conferirPermissoes(diagnostico);
+  await sondarNomeExato(diagnostico);
+  const stores = await listarCookieStores(diagnostico);
+
+  // Varredura por store: se os cookies existirem em OUTRO pote que não o
+  // consultado por padrão, é aqui que eles aparecem — e o log diz em qual.
+  for (const store of stores) {
+    try {
+      const doStore = (await browser.cookies.getAll({ storeId: store })) as CookieLido[];
+      const daSessao = doStore.filter((cookie) => NOME_COOKIE.test(cookie.name));
+      diagnostico.push(
+        `getAll(storeId=${store}): ${doStore.length} cookie(s) | de sessão: ${daSessao.length}`,
+      );
+      if (daSessao.length > 0) return doStore;
+    } catch (erro) {
+      diagnostico.push(
+        `getAll(storeId=${store}) LANÇOU: ${erro instanceof Error ? erro.message : String(erro)}`,
+      );
+    }
+  }
 
   const tentativas: { rotulo: string; filtro: Record<string, string> }[] = [
     { rotulo: 'url', filtro: { url: APP_URL } },
