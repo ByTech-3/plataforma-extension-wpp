@@ -6,6 +6,15 @@
  * exclusividade do background).
  */
 
+/**
+ * Largura do painel, em pixels.
+ *
+ * Uma constante só: o mesmo número dimensiona o painel e o espaço que o
+ * WhatsApp cede para ele. Dois valores independentes divergiriam no primeiro
+ * ajuste de layout, e sobraria uma fresta ou uma sobreposição.
+ */
+export const LARGURA_PAINEL = 340;
+
 export const ESTILOS = `
   :host { all: initial; }
   * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
@@ -25,7 +34,7 @@ export const ESTILOS = `
   .painel {
     position: fixed; top: 0; right: 0; z-index: 2147483000;
     display: flex; flex-direction: column;
-    width: 340px; height: 100vh;
+    width: var(--bytech3-largura, 340px); height: 100vh;
     background: #fff; color: #111827;
     border-left: 1px solid rgba(0,0,0,.12);
     box-shadow: -2px 0 16px rgba(0,0,0,.14);

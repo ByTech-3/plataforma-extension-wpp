@@ -23,6 +23,7 @@ import {
 } from '../lib/mensagens';
 import {
   ESTILOS,
+  LARGURA_PAINEL,
   bloco,
   botao,
   caixa,
@@ -57,6 +58,9 @@ function montar() {
 
   const raiz = document.createElement('div');
   raiz.id = ID_RAIZ;
+  // Propriedade customizada atravessa o shadow root: o painel e o espaço que o
+  // WhatsApp cede saem os dois deste mesmo número.
+  raiz.style.setProperty('--bytech3-largura', `${LARGURA_PAINEL}px`);
   const shadow = raiz.attachShadow({ mode: 'open' });
 
   const estilo = document.createElement('style');
@@ -301,6 +305,9 @@ function montar() {
   async function abrir() {
     painel.hidden = false;
     badge.hidden = true;
+    // O WhatsApp cede a faixa em vez de ficar por baixo: sobrepor esconderia
+    // justamente a conversa que o vendedor está lendo para decidir.
+    WhatsAppAdapter.reservarEspacoParaPainel(LARGURA_PAINEL);
     await guardarAberto(true);
     void recarregarSessao();
   }
@@ -308,6 +315,7 @@ function montar() {
   async function fecharPainel() {
     painel.hidden = true;
     badge.hidden = false;
+    WhatsAppAdapter.reservarEspacoParaPainel(null);
     await guardarAberto(false);
   }
 
@@ -420,21 +428,7 @@ function desenharSessao(area: HTMLElement, estado: EstadoSessao, recarregar: () 
 
 async function pedirSessao(): Promise<EstadoSessao> {
   try {
-    const estado = (await browser.runtime.sendMessage({
-      tipo: 'sessao/estado',
-    })) as EstadoSessao;
-
-    // O console do service worker do MV3 perde o histórico quando ele
-    // hiberna. Este console — o da página — fica aberto, então é aqui que o
-    // rastro é capturável de verdade.
-    console.info(
-      `[ByTech3] sessão: ${estado?.estado ?? 'resposta vazia'}` +
-        (estado?.diagnostico?.length
-          ? `\n${estado.diagnostico.map((linha) => `  · ${linha}`).join('\n')}`
-          : ''),
-    );
-
-    return estado;
+    return (await browser.runtime.sendMessage({ tipo: 'sessao/estado' })) as EstadoSessao;
   } catch (erro) {
     console.error('[ByTech3] o service worker não respondeu.', erro);
     return {

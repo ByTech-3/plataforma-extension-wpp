@@ -73,7 +73,55 @@ function lerJid(main: Element): { telefone: string | null; ehGrupo: boolean; jid
   return { telefone: null, ehGrupo: false, jid: null };
 }
 
+const ID_ESTILO_LAYOUT = 'bytech3-layout';
+const CLASSE_ABERTO = 'bytech3-painel-aberto';
+
+/**
+ * Encolhe o WhatsApp para o painel ocupar faixa própria.
+ *
+ * As três larguras são declaradas de propósito: o `body`, o `#app` e o filho
+ * direto dele. O WhatsApp posiciona parte do layout com `position: fixed`, e
+ * elemento fixo resolve `width: 100%` contra a JANELA, não contra o pai — ou
+ * seja, encolher só o `#app` deixaria a conversa passando por baixo do painel.
+ */
+function garantirEstiloDeLayout(): void {
+  if (document.getElementById(ID_ESTILO_LAYOUT)) return;
+
+  const estilo = document.createElement('style');
+  estilo.id = ID_ESTILO_LAYOUT;
+  estilo.textContent = `
+    html.${CLASSE_ABERTO} { overflow-x: hidden; }
+    html.${CLASSE_ABERTO} body,
+    html.${CLASSE_ABERTO} #app,
+    html.${CLASSE_ABERTO} #app > div {
+      width: calc(100vw - var(--bytech3-painel, 0px)) !important;
+      max-width: calc(100vw - var(--bytech3-painel, 0px)) !important;
+      transition: width .15s ease;
+    }
+  `;
+  document.head.appendChild(estilo);
+}
+
 export const WhatsAppAdapter = {
+  /**
+   * Abre espaço para o painel (largura em px) ou devolve a largura total
+   * (`null`). Sobrepor a conversa esconde justamente o que o vendedor está
+   * lendo enquanto decide salvar o lead.
+   */
+  reservarEspacoParaPainel(largura: number | null): void {
+    const raiz = document.documentElement;
+
+    if (largura === null) {
+      raiz.classList.remove(CLASSE_ABERTO);
+      raiz.style.removeProperty('--bytech3-painel');
+      return;
+    }
+
+    garantirEstiloDeLayout();
+    raiz.style.setProperty('--bytech3-painel', `${largura}px`);
+    raiz.classList.add(CLASSE_ABERTO);
+  },
+
   /** O contato da conversa aberta. Campos que não deram para ler vêm nulos. */
   getCurrentContact(): ContatoAtual {
     const main = document.querySelector('#main');
