@@ -6,12 +6,14 @@
  */
 import { conferirConfiguracao } from '../lib/config';
 import { listarDestinos, sincronizarConversas } from '../lib/conversas';
+import { atenderPonte } from '../lib/whatsapp-aba';
 import { consultarLead, criarLead } from '../lib/leads';
 import type {
   EstadoSessao,
   Mensagem,
   ResultadoConsulta,
   ResultadoDestinos,
+  RespostaPonte,
   ResultadoSincronizacao,
   ResultadoCriacao,
 } from '../lib/mensagens';
@@ -179,6 +181,19 @@ export default defineBackground(() => {
             ok: false,
             erro: 'Não foi possível carregar os funis.',
           } satisfies ResultadoDestinos);
+        });
+      return true;
+    }
+
+    if (mensagem?.tipo === 'ponte') {
+      atenderPonte(mensagem.pedido)
+        .then(responder)
+        .catch((erro) => {
+          console.error('[ByTech3] Falha na ponte com o WhatsApp.', erro);
+          responder({
+            estado: 'erro',
+            mensagem: 'Não foi possível falar com a aba do WhatsApp.',
+          } satisfies RespostaPonte);
         });
       return true;
     }

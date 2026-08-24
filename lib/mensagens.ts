@@ -24,6 +24,7 @@ export type Origem = (typeof ORIGENS)[number];
 export const ORIGEM_PADRAO_EXTENSAO: Origem = 'WhatsApp direto';
 
 export type Mensagem =
+  | { tipo: 'ponte'; pedido: PedidoPonte }
   | { tipo: 'conversas/sincronizar'; conversas: ConversaCapturada[] }
   | { tipo: 'funis/destinos' }
   | { tipo: 'sessao/estado' }
@@ -144,3 +145,31 @@ export type ResultadoCaptura = {
   conversas: ConversaCapturada[];
   aviso?: 'sem-lista' | 'lista-arquivadas';
 };
+
+// ------------------------------------------------- ENVIO DE MENSAGEM
+
+/**
+ * Uma mensagem lida da conversa aberta, para dar contexto ao vendedor.
+ *
+ * NUNCA É PERSISTIDA. Não existe tabela, coluna nem storage para ela: o texto
+ * sai do DOM do WhatsApp, aparece na tela e morre quando o painel fecha.
+ */
+export type MensagemLida = {
+  direcao: 'entrada' | 'saida';
+  texto: string;
+  horario: string | null;
+};
+
+/** O que o app pede à extensão, pela ponte no domínio do app. */
+export type PedidoPonte =
+  | { tipo: 'whatsapp/status' }
+  | { tipo: 'whatsapp/ler'; telefone: string }
+  | { tipo: 'whatsapp/enviar'; telefone: string; texto: string };
+
+export type RespostaPonte =
+  /** Não há aba do WhatsApp Web aberta. */
+  | { estado: 'sem-aba' }
+  /** A aba existe, mas a conversa pedida não abriu a tempo. */
+  | { estado: 'conversa-nao-abriu' }
+  | { estado: 'erro'; mensagem: string }
+  | { estado: 'ok'; mensagens?: MensagemLida[]; navegou?: boolean };

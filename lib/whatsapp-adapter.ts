@@ -9,7 +9,7 @@
  * ou follow-up para o número errado, e ninguém descobre até o cliente reclamar.
  */
 
-import type { ConversaCapturada, ResultadoCaptura } from './mensagens';
+import type { ConversaCapturada, MensagemLida, ResultadoCaptura } from './mensagens';
 
 export type OrigemDoTelefone =
   /** Veio do identificador da conversa (`<numero>@c.us`). É o número real. */
@@ -194,6 +194,37 @@ function tituloDaLinha(linha: Element): string | null {
   return texto || null;
 }
 
+/**
+ * Campo de digitação e botão de enviar.
+ *
+ * O rodapé tem DOIS `contenteditable` em algumas versões (a busca e o campo de
+ * mensagem), por isso a busca é feita dentro do `footer` do `#main`.
+ */
+const SELETORES_CAMPO = [
+  '#main footer [contenteditable="true"]',
+  '#main [data-testid="conversation-compose-box-input"]',
+];
+
+const SELETORES_ENVIAR = [
+  '#main footer [data-testid="send"]',
+  '#main footer button[aria-label*="nviar" i]',
+  '#main footer span[data-icon="send"]',
+];
+
+/** Balões de mensagem dentro da conversa aberta. */
+const SELETOR_BALAO = '#main [data-id]';
+
+/** Texto da mensagem. `selectable-text` é a classe do corpo há muitas versões. */
+const SELETORES_TEXTO = ['.selectable-text', '[data-testid="conversation-text"]'];
+
+function primeiroElemento<T extends Element>(seletores: string[]): T | null {
+  for (const seletor of seletores) {
+    const achado = document.querySelector<T>(seletor);
+    if (achado) return achado;
+  }
+  return null;
+}
+
 export const WhatsAppAdapter = {
   /**
    * Abre espaço para o painel (largura em px) ou devolve a largura total
@@ -334,6 +365,116 @@ export const WhatsAppAdapter = {
     painel.scrollTop = rolagemOriginal;
 
     return { conversas: Array.from(encontradas.values()) };
+  },
+
+  /** A conversa aberta é a deste telefone? Compara pelo fim, até 11 dígitos. */
+  conversaAbertaEh(telefone: string): boolean {
+    const atual = soDigitos(WhatsAppAdapter.getCurrentContact().telefone ?? '');
+    const alvo = soDigitos(telefone);
+    if (atual.length < 8 || alvo.length < 8) return false;
+
+    const comparar = Math.min(atual.length, alvo.length, 11);
+    return atual.slice(-comparar) === alvo.slice(-comparar);
+  },
+
+  /** Endereço que abre a conversa com um número no WhatsApp Web. */
+  enderecoDaConversa(telefone: string): string {
+    return `https://web.whatsapp.com/send?phone=${soDigitos(telefone)}`;
+  },
+
+  /**
+   * As últimas mensagens da conversa aberta, para dar contexto ao vendedor.
+   *
+   * EM MEMÓRIA, SEMPRE. Nada disto é enviado ao banco, guardado em storage ou
+   * escrito em log: conversa de cliente de terceiro é responsabilidade
+   * jurídica que este produto não tem motivo para assumir. O texto vai do DOM
+   * para a tela do vendedor e morre ali.
+   */
+  lerUltimasMensagens(limite = 15): MensagemLida[] {
+    const main = document.querySelector('#main');
+    if (!main) return [];
+
+    const baloes = Array.from(main.querySelectorAll(SELETOR_BALAO));
+    const lidas: MensagemLida[] = [];
+
+    // De trás para frente: as últimas são as que interessam.
+    for (let i = baloes.length - 1; i >= 0 && lidas.length < limite; i -= 1) {
+      const balao = baloes[i];
+      if (!balao) continue;
+
+      const id = balao.getAttribute('data-id') ?? '';
+
+      // `true_` = enviada por mim; `false_` = recebida. É o próprio WhatsApp
+      // quem marca isso no id do balão.
+      if (!id.startsWith('true_') && !id.startsWith('false_')) continue;
+
+      let texto: string | null = null;
+      for (const seletor of SELETORES_TEXTO) {
+        const corpo = balao.querySelector(seletor) as HTMLElement | null;
+        if (corpo?.innerText?.trim()) {
+          texto = corpo.innerText.trim();
+          break;
+        }
+      }
+
+      // Sem texto legível é anexo, áudio ou figurinha. Marcar como tal é mais
+      // honesto que sumir com a mensagem do meio da conversa.
+      const conteudo = texto ?? '[anexo ou mídia]';
+
+      // "[14:32, 20/08/2026] Fulano: " — só a hora interessa.
+      const cabecalho = balao.querySelector('[data-pre-plain-text]');
+      const horario =
+        cabecalho?.getAttribute('data-pre-plain-text')?.match(/\[(\d{1,2}:\d{2})/)?.[1] ?? null;
+
+      lidas.push({
+        direcao: id.startsWith('true_') ? 'saida' : 'entrada',
+        texto: conteudo.slice(0, 500),
+        horario,
+      });
+    }
+
+    return lidas.reverse();
+  },
+
+  /**
+   * Escreve e envia UMA mensagem na conversa aberta.
+   *
+   * Uma por vez, disparada por clique do vendedor. Não existe fila nem laço
+   * aqui de propósito: automação de envio pelo WhatsApp Web é o caminho mais
+   * curto para o número do cliente ser banido, e o risco recai sobre ele.
+   */
+  async enviarMensagem(texto: string): Promise<{ ok: boolean; erro?: string }> {
+    const campo = primeiroElemento<HTMLElement>(SELETORES_CAMPO);
+    if (!campo) {
+      return { ok: false, erro: 'O campo de mensagem não foi encontrado na conversa aberta.' };
+    }
+
+    campo.focus();
+
+    // `insertText` é o que dispara os eventos que o editor do WhatsApp escuta.
+    // Escrever em `textContent` preenche a caixa visualmente e o botão de
+    // enviar continua desabilitado, porque o React deles nunca soube da mudança.
+    const inseriu = document.execCommand('insertText', false, texto);
+    if (!inseriu) {
+      return { ok: false, erro: 'Não foi possível escrever no campo de mensagem.' };
+    }
+
+    // Um quadro para o editor processar antes de procurar o botão: ele só
+    // aparece depois que há texto.
+    await esperar(150);
+
+    const botaoEnviar = primeiroElemento<HTMLElement>(SELETORES_ENVIAR);
+    if (!botaoEnviar) {
+      return {
+        ok: false,
+        erro: 'O botão de enviar não apareceu. A mensagem ficou escrita na conversa — envie manualmente.',
+      };
+    }
+
+    (botaoEnviar.closest('button') ?? botaoEnviar).click();
+    await esperar(150);
+
+    return { ok: true };
   },
 
   /**

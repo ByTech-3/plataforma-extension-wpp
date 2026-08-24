@@ -794,3 +794,39 @@ async function marcarCapturaFeita(): Promise<void> {
     // Só a trava de tempo se perde; a captura em si deu certo.
   }
 }
+
+/**
+ * Ordens vindas do service worker para agir na conversa aberta.
+ *
+ * Quem executa é sempre a WhatsAppAdapter: este listener só traduz a ordem em
+ * chamada dela e devolve o resultado.
+ */
+browser.runtime.onMessage.addListener(
+  (
+    ordem: { tipo: string; telefone?: string; texto?: string },
+    _remetente,
+    responder: (resposta: unknown) => void,
+  ) => {
+    if (ordem?.tipo === 'whatsapp/conversa-aberta-e') {
+      responder(WhatsAppAdapter.conversaAbertaEh(ordem.telefone ?? ''));
+      return false;
+    }
+
+    if (ordem?.tipo === 'whatsapp/ler-mensagens') {
+      responder(WhatsAppAdapter.lerUltimasMensagens());
+      return false;
+    }
+
+    if (ordem?.tipo === 'whatsapp/enviar-mensagem') {
+      WhatsAppAdapter.enviarMensagem(ordem.texto ?? '')
+        .then(responder)
+        .catch((erro) => {
+          console.error('[ByTech3] Falha ao enviar a mensagem.', erro);
+          responder({ ok: false, erro: 'Não foi possível enviar a mensagem.' });
+        });
+      return true;
+    }
+
+    return false;
+  },
+);

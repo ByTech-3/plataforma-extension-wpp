@@ -21,6 +21,12 @@ export default defineConfig({
       'https://plataforma-web-wpp.vercel.app/*',
       'http://localhost:3000/*',
       'https://*.supabase.co/*',
+      // O envio pelo app precisa achar a aba do WhatsApp, navegar até a
+      // conversa e falar com o content script dela. Com permissão de host, o
+      // `tabs.query({url})` funciona SEM a permissão `tabs` — que daria acesso
+      // ao título e à URL de todas as abas do vendedor, inclusive as que não
+      // têm nada a ver com este produto.
+      'https://web.whatsapp.com/*',
     ],
   },
 });
