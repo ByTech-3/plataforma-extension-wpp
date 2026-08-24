@@ -812,6 +812,16 @@ browser.runtime.onMessage.addListener(
       return false;
     }
 
+    if (ordem?.tipo === 'whatsapp/abrir-conversa') {
+      WhatsAppAdapter.abrirConversaPorTelefone(ordem.telefone ?? '')
+        .then(responder)
+        .catch((erro) => {
+          console.error('[ByTech3] Falha ao abrir a conversa.', erro);
+          responder('nao-encontrada');
+        });
+      return true;
+    }
+
     if (ordem?.tipo === 'whatsapp/ler-mensagens') {
       responder(WhatsAppAdapter.lerUltimasMensagens());
       return false;

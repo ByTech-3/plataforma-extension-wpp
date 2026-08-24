@@ -19,6 +19,7 @@ function esperar(ms: number): Promise<void> {
 
 type OrdemParaAba =
   | { tipo: 'whatsapp/conversa-aberta-e'; telefone: string }
+  | { tipo: 'whatsapp/abrir-conversa'; telefone: string }
   | { tipo: 'whatsapp/ler-mensagens' }
   | { tipo: 'whatsapp/enviar-mensagem'; texto: string };
 
@@ -52,14 +53,20 @@ async function acharAba(): Promise<number | null> {
 async function garantirConversa(
   tabId: number,
   telefone: string,
-): Promise<{ ok: boolean; navegou: boolean }> {
-  const jaEsta = await mandarParaAba<boolean>(tabId, {
-    tipo: 'whatsapp/conversa-aberta-e',
+): Promise<{ ok: boolean; navegou: boolean; recarregou: boolean }> {
+  // Caminho normal: a própria página abre a conversa, clicando na lista ou
+  // usando a busca interna. Nada recarrega, e leva menos de um segundo.
+  const abertura = await mandarParaAba<'ja-aberta' | 'aberta' | 'nao-encontrada'>(tabId, {
+    tipo: 'whatsapp/abrir-conversa',
     telefone,
   });
 
-  if (jaEsta === true) return { ok: true, navegou: false };
+  if (abertura === 'ja-aberta') return { ok: true, navegou: false, recarregou: false };
+  if (abertura === 'aberta') return { ok: true, navegou: true, recarregou: false };
 
+  // ÚLTIMO RECURSO: contato com quem nunca se conversou não existe na lista
+  // nem na busca — só o link `?phone=` cria a conversa. Isso RECARREGA o
+  // WhatsApp Web, então só acontece quando não há outro caminho.
   const digitos = telefone.replace(/\D/g, '');
   await browser.tabs.update(tabId, { url: `https://web.whatsapp.com/send?phone=${digitos}` });
 
@@ -72,10 +79,10 @@ async function garantirConversa(
       telefone,
     });
 
-    if (abriu === true) return { ok: true, navegou: true };
+    if (abriu === true) return { ok: true, navegou: true, recarregou: true };
   }
 
-  return { ok: false, navegou: true };
+  return { ok: false, navegou: true, recarregou: true };
 }
 
 export async function atenderPonte(pedido: PedidoPonte): Promise<RespostaPonte> {
@@ -94,7 +101,12 @@ export async function atenderPonte(pedido: PedidoPonte): Promise<RespostaPonte> 
       tipo: 'whatsapp/ler-mensagens',
     });
 
-    return { estado: 'ok', mensagens: mensagens ?? [], navegou: conversa.navegou };
+    return {
+      estado: 'ok',
+      mensagens: mensagens ?? [],
+      navegou: conversa.navegou,
+      recarregou: conversa.recarregou,
+    };
   }
 
   const envio = await mandarParaAba<{ ok: boolean; erro?: string }>(tabId, {
@@ -109,5 +121,5 @@ export async function atenderPonte(pedido: PedidoPonte): Promise<RespostaPonte> 
     return { estado: 'erro', mensagem: envio.erro ?? 'Não foi possível enviar a mensagem.' };
   }
 
-  return { estado: 'ok', navegou: conversa.navegou };
+  return { estado: 'ok', navegou: conversa.navegou, recarregou: conversa.recarregou };
 }

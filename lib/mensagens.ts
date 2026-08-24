@@ -172,4 +172,11 @@ export type RespostaPonte =
   /** A aba existe, mas a conversa pedida não abriu a tempo. */
   | { estado: 'conversa-nao-abriu' }
   | { estado: 'erro'; mensagem: string }
-  | { estado: 'ok'; mensagens?: MensagemLida[]; navegou?: boolean };
+  | {
+      estado: 'ok';
+      mensagens?: MensagemLida[];
+      /** A aba estava em outra conversa e foi levada até esta. */
+      navegou?: boolean;
+      /** Precisou recarregar o WhatsApp (contato sem conversa anterior). */
+      recarregou?: boolean;
+    };

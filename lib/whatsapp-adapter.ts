@@ -225,6 +225,118 @@ function primeiroElemento<T extends Element>(seletores: string[]): T | null {
   return null;
 }
 
+/** Campo de busca da lista lateral. */
+const SELETORES_BUSCA = [
+  '#side [contenteditable="true"]',
+  '[data-testid="chat-list-search"]',
+  '#side input[type="text"]',
+];
+
+export type AberturaDeConversa = 'ja-aberta' | 'aberta' | 'nao-encontrada';
+
+function mesmoNumero(a: string, b: string): boolean {
+  const da = soDigitos(a);
+  const db = soDigitos(b);
+  if (da.length < 8 || db.length < 8) return false;
+  const comparar = Math.min(da.length, db.length, 11);
+  return da.slice(-comparar) === db.slice(-comparar);
+}
+
+/** Espera a conversa do telefone virar a conversa aberta. */
+async function esperarConversaAbrir(telefone: string, tentativas = 20): Promise<boolean> {
+  for (let i = 0; i < tentativas; i += 1) {
+    if (WhatsAppAdapter.conversaAbertaEh(telefone)) return true;
+    await esperar(150);
+  }
+  return false;
+}
+
+/**
+ * Clica na linha da conversa.
+ *
+ * O alvo do clique varia entre versões: às vezes a própria linha responde,
+ * às vezes só um filho interno. Tentar os dois é mais barato que descobrir
+ * qual é a versão de hoje.
+ */
+function clicarNaLinha(linha: Element): void {
+  const alvo =
+    linha.querySelector<HTMLElement>('[role="gridcell"]') ??
+    linha.querySelector<HTMLElement>('span[title]')?.closest<HTMLElement>('div') ??
+    (linha as HTMLElement);
+
+  alvo.click();
+  if (alvo !== linha) (linha as HTMLElement).click?.();
+}
+
+/** Procura o telefone entre as linhas visíveis e clica. */
+async function clicarNaLista(telefone: string): Promise<boolean> {
+  const painel = document.querySelector(SELETOR_LISTA);
+  if (!painel) return false;
+
+  for (const linha of linhasDaLista(painel)) {
+    const jid = jidDaLinha(linha);
+    const doJid = jid?.match(JID_CONTATO)?.[1] ?? null;
+    const titulo = tituloDaLinha(linha) ?? '';
+
+    const bate =
+      (doJid && mesmoNumero(doJid, telefone)) ||
+      (TITULO_TELEFONE.test(titulo) && mesmoNumero(titulo, telefone));
+
+    if (!bate) continue;
+
+    clicarNaLinha(linha);
+    if (await esperarConversaAbrir(telefone)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Usa a busca interna do WhatsApp e abre o primeiro resultado que bate.
+ *
+ * Tenta duas consultas: o número inteiro e só a parte local. Contato salvo na
+ * agenda costuma ser encontrado pelo número completo; contato fora da agenda,
+ * pelo trecho final.
+ */
+async function buscarEAbrir(telefone: string): Promise<boolean> {
+  const busca = primeiroElemento<HTMLElement>(SELETORES_BUSCA);
+  if (!busca) return false;
+
+  const digitos = soDigitos(telefone);
+  const consultas = [digitos, digitos.slice(-9)].filter(
+    (consulta, indice, todas) => consulta.length >= 8 && todas.indexOf(consulta) === indice,
+  );
+
+  for (const consulta of consultas) {
+    limparBusca(busca);
+    busca.focus();
+    document.execCommand('insertText', false, consulta);
+
+    // A lista de resultados é assíncrona; sem esta pausa lemos a lista velha.
+    await esperar(700);
+
+    if (await clicarNaLista(telefone)) {
+      limparBusca(busca);
+      return true;
+    }
+  }
+
+  limparBusca(busca);
+  return false;
+}
+
+/**
+ * Devolve a busca ao estado vazio.
+ *
+ * Deixar o texto no campo mudaria a lista lateral do vendedor sem ele ter
+ * pedido — e ele voltaria para o WhatsApp achando que perdeu as conversas.
+ */
+function limparBusca(busca: HTMLElement): void {
+  busca.focus();
+  document.execCommand('selectAll', false);
+  document.execCommand('delete', false);
+}
+
 export const WhatsAppAdapter = {
   /**
    * Abre espaço para o painel (largura em px) ou devolve a largura total
@@ -380,6 +492,30 @@ export const WhatsAppAdapter = {
   /** Endereço que abre a conversa com um número no WhatsApp Web. */
   enderecoDaConversa(telefone: string): string {
     return `https://web.whatsapp.com/send?phone=${soDigitos(telefone)}`;
+  },
+
+  /**
+   * Abre a conversa de um telefone SEM recarregar a página.
+   *
+   * Navegar por `?phone=` derruba e remonta o WhatsApp Web inteiro: são
+   * segundos de espera, o estado da aba se perde e, se a conexão estiver
+   * lenta, o tempo limite estoura antes de a conversa aparecer. Por isso a
+   * ordem é:
+   *
+   *   1. já está aberta      -> não faz nada
+   *   2. está na lista       -> clica na linha
+   *   3. não está na lista   -> usa a busca interna do WhatsApp e clica
+   *
+   * Só quando as três falham é que sobra a navegação por URL, e ela fica com
+   * quem chamou — que avisa o vendedor antes, porque a página vai recarregar.
+   */
+  async abrirConversaPorTelefone(telefone: string): Promise<AberturaDeConversa> {
+    if (WhatsAppAdapter.conversaAbertaEh(telefone)) return 'ja-aberta';
+
+    if (await clicarNaLista(telefone)) return 'aberta';
+    if (await buscarEAbrir(telefone)) return 'aberta';
+
+    return 'nao-encontrada';
   },
 
   /**
