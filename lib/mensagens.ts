@@ -24,6 +24,8 @@ export type Origem = (typeof ORIGENS)[number];
 export const ORIGEM_PADRAO_EXTENSAO: Origem = 'WhatsApp direto';
 
 export type Mensagem =
+  | { tipo: 'conversas/sincronizar'; conversas: ConversaCapturada[] }
+  | { tipo: 'funis/destinos' }
   | { tipo: 'sessao/estado' }
   | { tipo: 'lead/consultar'; contato: ContatoConsultado }
   | { tipo: 'lead/criar'; dados: NovoLead };
@@ -38,6 +40,8 @@ export type NovoLead = {
   nome: string;
   telefone: string | null;
   origem: string;
+  /** Etapa escolhida no painel. Sem ela, vale a primeira do funil padrão. */
+  stage_id?: string | null;
 };
 
 export type Organizacao = {
@@ -93,4 +97,39 @@ export type ResultadoConsulta =
 
 export type ResultadoCriacao =
   | { ok: true; lead: LeadResumo; entrouNoFunil: boolean }
+  | { ok: false; erro: string };
+
+// ------------------------------------------------------------------ INBOX
+
+/**
+ * Uma conversa lida da lista lateral do WhatsApp.
+ *
+ * `origem_do_id` diz se a identificação é forte (JID real do WhatsApp) ou
+ * fraca (chave derivada do título). Sem essa distinção, duas conversas
+ * homônimas seriam tratadas como a mesma.
+ */
+export type ConversaCapturada = {
+  chat_id: string;
+  origem_do_id: 'jid' | 'titulo';
+  titulo: string | null;
+  /** Só dígitos, e só quando lido com confiança. Nunca deduzido. */
+  telefone: string | null;
+  eh_grupo: boolean;
+  posicao: number;
+};
+
+export type ResultadoSincronizacao =
+  | { ok: true; total: number; removidas: number }
+  | { ok: false; erro: string };
+
+/** Uma etapa de destino no seletor "enviar para" do painel. */
+export type EtapaDestino = {
+  stage_id: string;
+  etapa: string;
+  funil: string;
+  padrao: boolean;
+};
+
+export type ResultadoDestinos =
+  | { ok: true; destinos: EtapaDestino[] }
   | { ok: false; erro: string };

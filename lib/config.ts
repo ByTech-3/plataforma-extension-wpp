@@ -35,3 +35,8 @@ export function conferirConfiguracao(): string | null {
   }
   return null;
 }
+
+export const URL_KANBAN = `${APP_URL}/kanban`;
+
+/** Teto de conversas capturadas. Igual ao da Inbox no app. */
+export const LIMITE_CONVERSAS = 50;

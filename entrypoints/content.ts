@@ -12,14 +12,19 @@
  * e troca de layout sem aviso; sem essa barreira, um `div { }` deles desmonta
  * o painel — e um `*` nosso desmontaria o deles.
  */
-import { URL_CRM, URL_LOGIN, urlDoLead } from '../lib/config';
+import { LIMITE_CONVERSAS, URL_CRM, URL_KANBAN, URL_LOGIN, urlDoLead } from '../lib/config';
 import {
   ORIGENS,
   ORIGEM_PADRAO_EXTENSAO,
   type EstadoSessao,
   type Mensagem,
   type LeadResumo,
+  type NovoLead,
+  type ConversaCapturada,
+  type EtapaDestino,
   type ResultadoConsulta,
+  type ResultadoDestinos,
+  type ResultadoSincronizacao,
   type ResultadoCriacao,
 } from '../lib/mensagens';
 import {
@@ -99,7 +104,10 @@ function montar() {
   const areaContato = document.createElement('div');
   areaContato.className = 'secao';
 
-  corpo.append(areaSessao, areaContato);
+  const areaInbox = document.createElement('div');
+  areaInbox.className = 'secao';
+
+  corpo.append(areaSessao, areaContato, areaInbox);
   cabecalho.append(titulo, fechar);
   painel.append(cabecalho, corpo);
   shadow.append(estilo, badge, painel);
@@ -123,8 +131,79 @@ function montar() {
     conectado = estado.estado === 'conectada';
     desenharSessao(areaSessao, estado, recarregarSessao);
 
+    areaInbox.replaceChildren();
     if (conectado) {
+      desenharInbox();
       void atualizarContato();
+    }
+  }
+
+  /**
+   * Captura das conversas para a Inbox do Kanban.
+   *
+   * SOB DEMANDA, e o botão deixa isso explícito: ler a lista exige rolar o
+   * painel do WhatsApp, o que é intrusivo demais para acontecer sozinho. E
+   * varredura contínua da conversa alheia não é coisa que um CRM deva fazer
+   * sem o vendedor mandar.
+   */
+  function desenharInbox() {
+    const status = document.createElement('div');
+
+    const botaoAtualizar = botao(
+      'Atualizar conversas',
+      () => void sincronizar(),
+      'secundaria',
+    );
+
+    areaInbox.replaceChildren(
+      bloco('Inbox do Kanban', 'Conversas recentes'),
+      paragrafo(
+        'Envia a lista de conversas recentes para a primeira coluna do quadro. Nenhuma vira lead sozinha.',
+        'fraco',
+      ),
+      botaoAtualizar,
+      status,
+    );
+
+    async function sincronizar() {
+      botaoAtualizar.disabled = true;
+      botaoAtualizar.textContent = 'Lendo conversas…';
+      status.replaceChildren(paragrafo('Percorrendo a lista do WhatsApp…', 'fraco'));
+
+      const conversas = await WhatsAppAdapter.listarConversasRecentes(LIMITE_CONVERSAS);
+
+      if (conversas.length === 0) {
+        botaoAtualizar.disabled = false;
+        botaoAtualizar.textContent = 'Atualizar conversas';
+        status.replaceChildren(
+          caixa(
+            'aviso',
+            'Nenhuma conversa foi lida. Confira se a lista de conversas está visível nesta janela.',
+          ),
+        );
+        return;
+      }
+
+      botaoAtualizar.textContent = 'Enviando…';
+      const resultado = await pedirSincronizacao(conversas);
+
+      botaoAtualizar.disabled = false;
+      botaoAtualizar.textContent = 'Atualizar conversas';
+
+      if (resultado === 'descarregada') return;
+
+      if (!resultado.ok) {
+        status.replaceChildren(caixa('erro', resultado.erro));
+        return;
+      }
+
+      status.replaceChildren(
+        caixa(
+          'sucesso',
+          `${resultado.total} conversa(s) na Inbox. Abra o Kanban para transformá-las em leads.`,
+        ),
+        link('Abrir o Kanban', URL_KANBAN, 'secundaria'),
+      );
     }
   }
 
@@ -261,6 +340,12 @@ function montar() {
 
     const origem = selecao('Origem', ORIGENS, ORIGEM_PADRAO_EXTENSAO);
 
+    // Destino: qual quadro e qual etapa. Carregado sob demanda e guardado em
+    // memória — abrir o formulário duas vezes não recarrega os funis.
+    const destino = selecao('Enviar para', ['Carregando funis…'], 'Carregando funis…');
+    destino.entrada.disabled = true;
+    void preencherDestinos(destino.entrada);
+
     const acoes = document.createElement('div');
     acoes.className = 'linha-acoes';
 
@@ -274,6 +359,7 @@ function montar() {
       nome.raiz,
       telefone.raiz,
       origem.raiz,
+      destino.raiz,
       paragrafo('Você fica como responsável por este lead.', 'fraco'),
       acoes,
       aviso,
@@ -295,6 +381,7 @@ function montar() {
         nome: nome.entrada.value.trim(),
         telefone: telefone.entrada.value.trim() || null,
         origem: origem.entrada.value,
+        stage_id: destino.entrada.disabled ? null : destino.entrada.value || null,
       });
 
       // Se o vendedor trocou de conversa durante o salvamento, o lead foi
@@ -523,11 +610,7 @@ async function pedirConsulta(contato: ContatoAtual): Promise<ResultadoConsulta |
   );
 }
 
-async function pedirCriacao(dados: {
-  nome: string;
-  telefone: string | null;
-  origem: string;
-}): Promise<ResultadoCriacao | 'descarregada'> {
+async function pedirCriacao(dados: NovoLead): Promise<ResultadoCriacao | 'descarregada'> {
   return enviar<ResultadoCriacao>({ tipo: 'lead/criar', dados }, {
     ok: false,
     erro: 'Não foi possível salvar o lead. Tente de novo.',
@@ -551,4 +634,55 @@ async function guardarAberto(aberto: boolean): Promise<void> {
   } catch {
     // Preferência de interface. Perder isso não quebra nada.
   }
+}
+
+async function pedirSincronizacao(
+  conversas: ConversaCapturada[],
+): Promise<ResultadoSincronizacao | 'descarregada'> {
+  return enviar<ResultadoSincronizacao>({ tipo: 'conversas/sincronizar', conversas }, {
+    ok: false,
+    erro: 'Não foi possível atualizar as conversas. Tente de novo.',
+  });
+}
+
+async function pedirDestinos(): Promise<ResultadoDestinos | 'descarregada'> {
+  return enviar<ResultadoDestinos>({ tipo: 'funis/destinos' }, {
+    ok: false,
+    erro: 'Não foi possível carregar os funis.',
+  });
+}
+
+/**
+ * Destinos guardados em memória: abrir o formulário de novo não recarrega os
+ * funis. O service worker pode hibernar entre uma abertura e outra, mas a
+ * lista de funis não muda de minuto em minuto.
+ */
+let destinosEmCache: EtapaDestino[] | null = null;
+
+async function preencherDestinos(entrada: HTMLSelectElement): Promise<void> {
+  if (!destinosEmCache) {
+    const resultado = await pedirDestinos();
+    if (resultado === 'descarregada') return;
+
+    if (!resultado.ok || resultado.destinos.length === 0) {
+      entrada.replaceChildren(new Option('Funil padrão', ''));
+      entrada.disabled = false;
+      return;
+    }
+
+    destinosEmCache = resultado.destinos;
+  }
+
+  entrada.replaceChildren();
+  for (const item of destinosEmCache) {
+    const opcao = new Option(`${item.funil} › ${item.etapa}`, item.stage_id);
+    entrada.add(opcao);
+  }
+
+  // Pré-seleciona a primeira etapa do funil padrão: o mesmo destino que o app
+  // web usaria sozinho, para os dois caminhos combinarem.
+  const padrao = destinosEmCache.find((item) => item.padrao);
+  if (padrao) entrada.value = padrao.stage_id;
+
+  entrada.disabled = false;
 }

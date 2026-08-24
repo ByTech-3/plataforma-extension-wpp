@@ -247,7 +247,12 @@ export async function criarLead(
     responsavel_id: string | null;
   };
 
-  const entrouNoFunil = await colocarNoFunilPadrao(supabase, organizationId, lead.id);
+  const entrouNoFunil = await colocarNoFunil(
+    supabase,
+    organizationId,
+    lead.id,
+    dados.stage_id ?? null,
+  );
 
   return {
     ok: true,
@@ -257,17 +262,45 @@ export async function criarLead(
 }
 
 /**
- * Coloca o lead recém-criado no funil padrão.
+ * Coloca o lead recém-criado numa etapa.
+ *
+ * Com `stageId`, vai para a etapa que o vendedor escolheu no painel; sem ele,
+ * para a primeira do funil padrão — o mesmo destino que o app web usaria.
  *
  * Falhar aqui não invalida o lead: ele existe, com histórico, e a ficha no app
  * mostra o aviso de "fora do funil" com o botão de reparo. Por isso devolve um
  * booleano em vez de lançar.
  */
-async function colocarNoFunilPadrao(
+async function colocarNoFunil(
   supabase: SupabaseClient,
   organizationId: string,
   leadId: string,
+  stageId: string | null,
 ): Promise<boolean> {
+  if (stageId) {
+    // A etapa tem que ser desta organização — daí sai o funil de destino.
+    const { data: etapa } = await supabase
+      .from('pipeline_stages')
+      .select('id, pipeline_id')
+      .eq('id', stageId)
+      .eq('organization_id', organizationId)
+      .maybeSingle();
+
+    const escolhida = etapa as { id: string; pipeline_id: string } | null;
+    if (escolhida) {
+      const { error } = await supabase.from('lead_pipeline').insert({
+        organization_id: organizationId,
+        lead_id: leadId,
+        pipeline_id: escolhida.pipeline_id,
+        stage_id: escolhida.id,
+        posicao: 0,
+      });
+      return !error;
+    }
+    // Etapa inválida (funil apagado entre a abertura do painel e o salvamento):
+    // cai para o funil padrão em vez de deixar o lead fora do quadro.
+  }
+
   const { data: funis } = await supabase
     .from('pipelines')
     .select('id')

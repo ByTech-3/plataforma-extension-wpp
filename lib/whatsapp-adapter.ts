@@ -9,6 +9,8 @@
  * ou follow-up para o número errado, e ninguém descobre até o cliente reclamar.
  */
 
+import type { ConversaCapturada } from './mensagens';
+
 export type OrigemDoTelefone =
   /** Veio do identificador da conversa (`<numero>@c.us`). É o número real. */
   | 'jid'
@@ -102,6 +104,56 @@ function garantirEstiloDeLayout(): void {
   document.head.appendChild(estilo);
 }
 
+/** Painel lateral com a lista de conversas. */
+const SELETOR_LISTA = '#pane-side';
+
+/**
+ * Uma conversa na lista. O WhatsApp já trocou esses nomes mais de uma vez, por
+ * isso são candidatos em ordem de preferência, e não um seletor único.
+ */
+const SELETORES_LINHA = [
+  '[role="listitem"]',
+  '[data-testid="cell-frame-container"]',
+  '[data-testid="list-item-container"]',
+];
+
+function esperar(ms: number): Promise<void> {
+  return new Promise((resolver) => window.setTimeout(resolver, ms));
+}
+
+/** Linhas da lista, pelo primeiro seletor que devolver algo. */
+function linhasDaLista(painel: Element): Element[] {
+  for (const seletor of SELETORES_LINHA) {
+    const achadas = painel.querySelectorAll(seletor);
+    if (achadas.length > 0) return Array.from(achadas);
+  }
+  return [];
+}
+
+/** O JID aparece em `data-id` na própria linha ou em algum descendente. */
+function jidDaLinha(linha: Element): string | null {
+  const candidatos = [linha, ...Array.from(linha.querySelectorAll('[data-id]'))];
+
+  for (const elemento of candidatos) {
+    const bruto = elemento.getAttribute?.('data-id') ?? '';
+    if (JID_GRUPO.test(bruto) || JID_CONTATO.test(bruto)) return bruto;
+  }
+
+  return null;
+}
+
+function tituloDaLinha(linha: Element): string | null {
+  // `span[title]` é o nome exibido. Pega o primeiro com título não vazio: os
+  // seguintes costumam ser a prévia da última mensagem, que não queremos nem
+  // ler, muito menos guardar.
+  const marcado = linha.querySelector('span[title]');
+  const titulo = marcado?.getAttribute('title')?.trim();
+  if (titulo) return titulo;
+
+  const texto = (linha as HTMLElement).innerText?.split('\n')[0]?.trim();
+  return texto || null;
+}
+
 export const WhatsAppAdapter = {
   /**
    * Abre espaço para o painel (largura em px) ou devolve a largura total
@@ -155,6 +207,84 @@ export const WhatsAppAdapter = {
       temConversaAberta: true,
       chave: jid ?? titulo,
     };
+  },
+
+  /**
+   * As conversas recentes da lista lateral, na ordem em que o WhatsApp as
+   * mostra (que já é da mais recente para a mais antiga).
+   *
+   * SOB DEMANDA, NUNCA CONTÍNUO: a lista é virtualizada — só existem no DOM as
+   * linhas visíveis —, então buscar 50 exige rolar o painel. Rolar a tela do
+   * vendedor é intrusivo demais para acontecer sozinho; por isso só roda a
+   * pedido, e a posição da rolagem é devolvida ao lugar no fim.
+   *
+   * O QUE NÃO É LIDO: nenhuma mensagem, nenhuma prévia, nenhuma contagem de
+   * não lidas. Só quem é a conversa e em que posição ela estava.
+   */
+  async listarConversasRecentes(limite = 50): Promise<ConversaCapturada[]> {
+    const painel = document.querySelector(SELETOR_LISTA);
+    if (!painel) return [];
+
+    const rolagemOriginal = painel.scrollTop;
+    const encontradas = new Map<string, ConversaCapturada>();
+
+    // Teto de passadas: a lista pode ter milhares de conversas, e insistir até
+    // o fim travaria a aba do vendedor.
+    const MAX_PASSADAS = 15;
+
+    for (let passada = 0; passada < MAX_PASSADAS; passada += 1) {
+      const antes = encontradas.size;
+
+      for (const linha of linhasDaLista(painel)) {
+        if (encontradas.size >= limite) break;
+
+        const titulo = tituloDaLinha(linha);
+        if (!titulo) continue;
+
+        const jid = jidDaLinha(linha);
+        const ehGrupo = jid ? JID_GRUPO.test(jid) : false;
+
+        let telefone: string | null = null;
+        const doJid = jid?.match(JID_CONTATO);
+        if (doJid?.[1]) {
+          telefone = doJid[1];
+        } else if (!ehGrupo && TITULO_TELEFONE.test(titulo)) {
+          // Contato fora da agenda: o WhatsApp mostra o número como nome.
+          const digitos = soDigitos(titulo);
+          if (digitos.length >= 8 && digitos.length <= 15) telefone = digitos;
+        }
+
+        // Sem JID, a chave sai do título — identificação mais fraca, e o
+        // `origem_do_id` registra isso para ninguém confiar demais nela.
+        const chaveForte = jid?.match(/[\w.-]+@(c\.us|g\.us)/)?.[0] ?? null;
+        const chat_id = chaveForte ?? `titulo:${titulo.toLowerCase()}`;
+
+        if (encontradas.has(chat_id)) continue;
+
+        encontradas.set(chat_id, {
+          chat_id,
+          origem_do_id: chaveForte ? 'jid' : 'titulo',
+          titulo,
+          telefone,
+          eh_grupo: ehGrupo,
+          posicao: encontradas.size,
+        });
+      }
+
+      if (encontradas.size >= limite) break;
+
+      const chegouAoFim = painel.scrollTop + painel.clientHeight >= painel.scrollHeight - 4;
+      if (chegouAoFim && encontradas.size === antes) break;
+
+      painel.scrollTop += Math.max(painel.clientHeight * 0.8, 200);
+      // A lista virtualizada precisa de um respiro para renderizar as novas
+      // linhas antes da próxima leitura.
+      await esperar(220);
+    }
+
+    painel.scrollTop = rolagemOriginal;
+
+    return Array.from(encontradas.values());
   },
 
   /**

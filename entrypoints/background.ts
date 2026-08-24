@@ -5,11 +5,14 @@
  * O JWT do vendedor não sai daqui: não é injetado na página do WhatsApp.
  */
 import { conferirConfiguracao } from '../lib/config';
+import { listarDestinos, sincronizarConversas } from '../lib/conversas';
 import { consultarLead, criarLead } from '../lib/leads';
 import type {
   EstadoSessao,
   Mensagem,
   ResultadoConsulta,
+  ResultadoDestinos,
+  ResultadoSincronizacao,
   ResultadoCriacao,
 } from '../lib/mensagens';
 import { estaExpirada, lerSessaoDoApp } from '../lib/sessao';
@@ -141,6 +144,41 @@ export default defineBackground(() => {
             estado: 'erro',
             mensagem: 'Não foi possível consultar o CRM. Tente de novo.',
           } satisfies ResultadoConsulta);
+        });
+      return true;
+    }
+
+    if (mensagem?.tipo === 'conversas/sincronizar') {
+      const conversas = mensagem.conversas;
+
+      comSessao<ResultadoSincronizacao>(
+        (supabase, organizationId, usuarioId) =>
+          sincronizarConversas(supabase, organizationId, usuarioId, conversas),
+        (_motivo, texto) => ({ ok: false, erro: texto }),
+      )
+        .then(responder)
+        .catch((erro) => {
+          console.error('[ByTech3] Falha ao sincronizar as conversas.', erro);
+          responder({
+            ok: false,
+            erro: 'Não foi possível atualizar as conversas. Tente de novo.',
+          } satisfies ResultadoSincronizacao);
+        });
+      return true;
+    }
+
+    if (mensagem?.tipo === 'funis/destinos') {
+      comSessao<ResultadoDestinos>(
+        (supabase, organizationId) => listarDestinos(supabase, organizationId),
+        (_motivo, texto) => ({ ok: false, erro: texto }),
+      )
+        .then(responder)
+        .catch((erro) => {
+          console.error('[ByTech3] Falha ao carregar os destinos.', erro);
+          responder({
+            ok: false,
+            erro: 'Não foi possível carregar os funis.',
+          } satisfies ResultadoDestinos);
         });
       return true;
     }
