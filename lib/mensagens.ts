@@ -133,3 +133,14 @@ export type EtapaDestino = {
 export type ResultadoDestinos =
   | { ok: true; destinos: EtapaDestino[] }
   | { ok: false; erro: string };
+
+/**
+ * Resultado da leitura da lista lateral.
+ *
+ * `aviso` distingue "não achei nada" de "não devo capturar agora" — a segunda
+ * merece explicação na tela, não silêncio.
+ */
+export type ResultadoCaptura = {
+  conversas: ConversaCapturada[];
+  aviso?: 'sem-lista' | 'lista-arquivadas';
+};

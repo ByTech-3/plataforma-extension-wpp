@@ -117,7 +117,11 @@ function montar() {
   let contato: ContatoAtual = WhatsAppAdapter.getCurrentContact();
   let conectado = false;
   let descarregada = false;
+  let capturando = false;
+  let jaCapturouNestaAba = false;
   let pararObservador: (() => void) | null = null;
+  let statusInbox: HTMLElement | null = null;
+  let botaoAtualizar: HTMLButtonElement | null = null;
 
   async function recarregarSessao() {
     if (descarregada) return;
@@ -147,13 +151,9 @@ function montar() {
    * sem o vendedor mandar.
    */
   function desenharInbox() {
-    const status = document.createElement('div');
+    statusInbox = document.createElement('div');
 
-    const botaoAtualizar = botao(
-      'Atualizar conversas',
-      () => void sincronizar(),
-      'secundaria',
-    );
+    botaoAtualizar = botao('Atualizar conversas', () => void capturar(false), 'secundaria');
 
     areaInbox.replaceChildren(
       bloco('Inbox do Kanban', 'Conversas recentes'),
@@ -162,48 +162,117 @@ function montar() {
         'fraco',
       ),
       botaoAtualizar,
-      status,
+      statusInbox,
     );
+  }
 
-    async function sincronizar() {
+  function mostrarNaInbox(...elementos: Node[]) {
+    statusInbox?.replaceChildren(...elementos);
+  }
+
+  /**
+   * Lê a lista e manda para a Inbox.
+   *
+   * `automatica` só muda o quanto a operação aparece: no automático, silêncio
+   * quando não há nada a dizer — o vendedor não pediu, e um aviso que ele não
+   * provocou vira ruído.
+   */
+  async function capturar(automatica: boolean): Promise<boolean> {
+    if (descarregada || capturando) return false;
+    capturando = true;
+
+    if (botaoAtualizar) {
       botaoAtualizar.disabled = true;
-      botaoAtualizar.textContent = 'Lendo conversas…';
-      status.replaceChildren(paragrafo('Percorrendo a lista do WhatsApp…', 'fraco'));
+      botaoAtualizar.textContent = automatica ? 'Atualizando…' : 'Lendo conversas…';
+    }
+    if (!automatica) mostrarNaInbox(paragrafo('Percorrendo a lista do WhatsApp…', 'fraco'));
 
-      const conversas = await WhatsAppAdapter.listarConversasRecentes(LIMITE_CONVERSAS);
+    const leitura = await WhatsAppAdapter.listarConversasRecentes(LIMITE_CONVERSAS);
 
-      if (conversas.length === 0) {
+    const encerrar = () => {
+      capturando = false;
+      if (botaoAtualizar) {
         botaoAtualizar.disabled = false;
         botaoAtualizar.textContent = 'Atualizar conversas';
-        status.replaceChildren(
+      }
+    };
+
+    if (leitura.aviso === 'lista-arquivadas') {
+      encerrar();
+      mostrarNaInbox(
+        caixa(
+          'aviso',
+          'Você está vendo as conversas arquivadas. Volte para a lista principal e atualize de novo — ' +
+            'arquivadas não entram na Inbox.',
+        ),
+      );
+      return false;
+    }
+
+    if (leitura.conversas.length === 0) {
+      encerrar();
+      if (!automatica) {
+        mostrarNaInbox(
           caixa(
             'aviso',
             'Nenhuma conversa foi lida. Confira se a lista de conversas está visível nesta janela.',
           ),
         );
+      }
+      return false;
+    }
+
+    if (botaoAtualizar) botaoAtualizar.textContent = 'Enviando…';
+    const resultado = await pedirSincronizacao(leitura.conversas);
+    encerrar();
+
+    if (resultado === 'descarregada') return false;
+
+    if (!resultado.ok) {
+      // Falha de gravação aparece mesmo no automático: se a licença venceu, o
+      // vendedor precisa saber por que a Inbox não atualiza mais.
+      mostrarNaInbox(caixa('erro', resultado.erro));
+      return false;
+    }
+
+    await marcarCapturaFeita();
+    mostrarNaInbox(
+      caixa(
+        'sucesso',
+        `${resultado.total} conversa(s) na Inbox. Abra o Kanban para transformá-las em leads.`,
+      ),
+      link('Abrir o Kanban', URL_KANBAN, 'secundaria'),
+    );
+    return true;
+  }
+
+  /**
+   * Captura uma vez ao conectar, sem clique.
+   *
+   * NÃO vira varredura contínua: a leitura rola a lista do vendedor, e repetir
+   * isso sozinho seria intrusivo. Duas travas garantem: uma por aba (só uma
+   * vez por carregamento) e uma por tempo, guardada entre recargas — recarregar
+   * o WhatsApp cinco vezes seguidas não dispara cinco varreduras.
+   */
+  async function capturarAoConectar(): Promise<void> {
+    if (descarregada || jaCapturouNestaAba) return;
+    if (!(await passouIntervaloDeCaptura())) return;
+
+    const estado = await pedirSessao();
+    if (estado === 'descarregada' || estado.estado !== 'conectada') return;
+
+    // O WhatsApp pode estar sincronizando: a lista ainda não existe e a
+    // captura volta vazia. Sem estas tentativas, a aba passaria o dia inteiro
+    // sem Inbox por causa de alguns segundos de atraso no carregamento.
+    for (let tentativa = 0; tentativa < 3; tentativa += 1) {
+      if (descarregada) return;
+
+      if (await capturar(true)) {
+        jaCapturouNestaAba = true;
         return;
       }
 
-      botaoAtualizar.textContent = 'Enviando…';
-      const resultado = await pedirSincronizacao(conversas);
-
-      botaoAtualizar.disabled = false;
-      botaoAtualizar.textContent = 'Atualizar conversas';
-
-      if (resultado === 'descarregada') return;
-
-      if (!resultado.ok) {
-        status.replaceChildren(caixa('erro', resultado.erro));
-        return;
-      }
-
-      status.replaceChildren(
-        caixa(
-          'sucesso',
-          `${resultado.total} conversa(s) na Inbox. Abra o Kanban para transformá-las em leads.`,
-        ),
-        link('Abrir o Kanban', URL_KANBAN, 'secundaria'),
-      );
+      await esperarUmPouco(5000);
     }
   }
 
@@ -463,7 +532,17 @@ function montar() {
 
   void (async () => {
     if (await estavaAberto()) await abrir();
+
+    // A captura ao conectar roda com o painel aberto OU fechado: a Inbox é
+    // consumida no Kanban, e o vendedor pode passar o dia no WhatsApp sem
+    // nunca abrir este painel. Espera o WhatsApp montar a lista antes.
+    await esperarUmPouco(4000);
+    void capturarAoConectar();
   })();
+}
+
+function esperarUmPouco(ms: number): Promise<void> {
+  return new Promise((resolver) => window.setTimeout(resolver, ms));
 }
 
 function cartaoDoLead(lead: LeadResumo): HTMLElement[] {
@@ -685,4 +764,33 @@ async function preencherDestinos(entrada: HTMLSelectElement): Promise<void> {
   if (padrao) entrada.value = padrao.stage_id;
 
   entrada.disabled = false;
+}
+
+/**
+ * Trava de tempo da captura automática.
+ *
+ * Sem ela, cada recarga do WhatsApp rolaria a lista do vendedor de novo. Com
+ * ela, a captura automática acontece no máximo uma vez a cada 10 minutos — o
+ * botão continua disponível para quando ele quiser agora.
+ */
+const INTERVALO_CAPTURA_MS = 10 * 60 * 1000;
+const CHAVE_ULTIMA_CAPTURA = 'ultima_captura_em';
+
+async function passouIntervaloDeCaptura(): Promise<boolean> {
+  try {
+    const guardado = await browser.storage.local.get(CHAVE_ULTIMA_CAPTURA);
+    const ultima = Number(guardado[CHAVE_ULTIMA_CAPTURA] ?? 0);
+    return Date.now() - ultima >= INTERVALO_CAPTURA_MS;
+  } catch {
+    // Sem storage, é melhor capturar do que nunca capturar.
+    return true;
+  }
+}
+
+async function marcarCapturaFeita(): Promise<void> {
+  try {
+    await browser.storage.local.set({ [CHAVE_ULTIMA_CAPTURA]: Date.now() });
+  } catch {
+    // Só a trava de tempo se perde; a captura em si deu certo.
+  }
 }

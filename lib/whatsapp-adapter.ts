@@ -9,7 +9,7 @@
  * ou follow-up para o número errado, e ninguém descobre até o cliente reclamar.
  */
 
-import type { ConversaCapturada } from './mensagens';
+import type { ConversaCapturada, ResultadoCaptura } from './mensagens';
 
 export type OrigemDoTelefone =
   /** Veio do identificador da conversa (`<numero>@c.us`). É o número real. */
@@ -142,6 +142,46 @@ function jidDaLinha(linha: Element): string | null {
   return null;
 }
 
+/**
+ * "Arquivadas", "Archived" — o rótulo da entrada que leva à lista de
+ * arquivadas, e o título do cabeçalho quando o vendedor está dentro dela.
+ */
+const ROTULO_ARQUIVADAS = /^(arquivad[ao]s?|archived)$/i;
+
+/**
+ * A linha é a ENTRADA para os arquivados, e não uma conversa?
+ *
+ * Ela mora no topo da lista e é lida como qualquer outra linha — foi assim que
+ * "Arquivadas" foi parar na Inbox como se fosse um contato. Uma conversa de
+ * verdade tem JID; a entrada, não. Por isso a checagem só vale quando o JID
+ * está ausente: um contato realmente chamado "Arquivadas" continua entrando.
+ */
+function ehEntradaDeArquivadas(linha: Element, titulo: string | null, jid: string | null): boolean {
+  if (jid) return false;
+  if (linha.querySelector('[data-testid="archived-button"]')) return true;
+
+  const rotulo = linha.getAttribute('aria-label')?.trim() ?? '';
+  if (ROTULO_ARQUIVADAS.test(rotulo)) return true;
+
+  return titulo ? ROTULO_ARQUIVADAS.test(titulo.trim()) : false;
+}
+
+/**
+ * O vendedor está com a lista de ARQUIVADAS aberta?
+ *
+ * Dentro dela, as linhas são conversas de verdade, com JID — indistinguíveis
+ * das ativas. Então não dá para filtrar uma a uma: o jeito honesto é não
+ * capturar e dizer por quê, em vez de encher a Inbox de contatos que o
+ * vendedor arquivou justamente para tirar da frente.
+ *
+ * Heurística: o cabeçalho acima da lista mostra o título "Arquivadas".
+ */
+function estaVendoArquivadas(painel: Element): boolean {
+  const cabecalho = painel.parentElement?.querySelector('header');
+  const primeiraLinha = (cabecalho as HTMLElement | null)?.innerText?.split('\n')[0]?.trim() ?? '';
+  return ROTULO_ARQUIVADAS.test(primeiraLinha);
+}
+
 function tituloDaLinha(linha: Element): string | null {
   // `span[title]` é o nome exibido. Pega o primeiro com título não vazio: os
   // seguintes costumam ser a prévia da última mensagem, que não queremos nem
@@ -221,9 +261,16 @@ export const WhatsAppAdapter = {
    * O QUE NÃO É LIDO: nenhuma mensagem, nenhuma prévia, nenhuma contagem de
    * não lidas. Só quem é a conversa e em que posição ela estava.
    */
-  async listarConversasRecentes(limite = 50): Promise<ConversaCapturada[]> {
+  async listarConversasRecentes(limite = 50): Promise<ResultadoCaptura> {
     const painel = document.querySelector(SELETOR_LISTA);
-    if (!painel) return [];
+    if (!painel) return { conversas: [], aviso: 'sem-lista' };
+
+    // Conversa arquivada é conversa que o vendedor tirou da frente de
+    // propósito. Trazê-la de volta como "contato ativo" na Inbox desfaz a
+    // decisão dele.
+    if (estaVendoArquivadas(painel)) {
+      return { conversas: [], aviso: 'lista-arquivadas' };
+    }
 
     const rolagemOriginal = painel.scrollTop;
     const encontradas = new Map<string, ConversaCapturada>();
@@ -242,6 +289,8 @@ export const WhatsAppAdapter = {
         if (!titulo) continue;
 
         const jid = jidDaLinha(linha);
+        if (ehEntradaDeArquivadas(linha, titulo, jid)) continue;
+
         const ehGrupo = jid ? JID_GRUPO.test(jid) : false;
 
         let telefone: string | null = null;
@@ -284,7 +333,7 @@ export const WhatsAppAdapter = {
 
     painel.scrollTop = rolagemOriginal;
 
-    return Array.from(encontradas.values());
+    return { conversas: Array.from(encontradas.values()) };
   },
 
   /**
