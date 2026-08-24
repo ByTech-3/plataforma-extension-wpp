@@ -62,6 +62,40 @@ Não pede `tabs`, não pede `<all_urls>`, não lê histórico. O que a extensão
 precisa, ela não pede — e uma extensão que roda no navegador do cliente é
 revisada por essa lista antes de qualquer coisa.
 
+## Uma peculiaridade do Chrome que vale conhecer
+
+A sessão é buscada com `cookies.get` **pelo nome exato**, derivado do ref do
+projeto Supabase (`https://<ref>.supabase.co` → `sb-<ref>-auth-token`, mais os
+sufixos `.0`, `.1`… do fatiamento). A enumeração por `cookies.getAll` ficou só
+como rede de segurança.
+
+O motivo é empírico, não estilístico: num Chrome real, com a permissão de API e
+a permissão de host **as duas concedidas** (confirmado por
+`permissions.contains`), um único cookie store e o cookie presente no
+navegador, `getAll` devolveu **lista vazia em todos os filtros** — url, domain,
+sem filtro e por storeId — enquanto `get` com o nome exato devolveu o cookie de
+3180 caracteres na hora. As duas chamadas percorrem caminhos diferentes na
+implementação, e só a enumeração falhou.
+
+Como o nome do cookie é derivável, não há motivo para depender da listagem para
+descobrir o que já se sabe. Se alguém "simplificar" isso de volta para
+`getAll`, a extensão volta a dizer "sem sessão" com o usuário logado.
+
+## Melhorias previstas (ainda não implementadas)
+
+**Ler a sessão por content script no domínio do app**, em vez da API de
+cookies. O cookie do `@supabase/ssr` é gravado com `httpOnly: false`, então um
+content script rodando no próprio domínio do app lê a sessão com
+`document.cookie` e a envia ao background.
+
+Dois ganhos que valem por si sós, independentes do bug que motivou a ideia:
+
+- **Remove a permissão `cookies` do manifest** — menos superfície e revisão
+  mais simples na Chrome Web Store.
+- **Resolve o vencimento de 1 hora do token.** Com a aba do CRM aberta, o app
+  renova o cookie e o content script reenvia a sessão fresca, então o vendedor
+  não vê mais o convite para reconectar no meio do expediente.
+
 ## Estrutura
 
 ```

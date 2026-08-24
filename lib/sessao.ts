@@ -81,34 +81,78 @@ async function conferirPermissoes(diagnostico: string[]): Promise<void> {
 }
 
 /**
- * Procura o cookie pelo nome exato, deduzido da URL do Supabase
- * (`https://<ref>.supabase.co` -> `sb-<ref>-auth-token`).
- *
- * `getAll` e `get` percorrem caminhos diferentes na implementação do Chrome.
- * Se a busca por nome achar o que a listagem não achou, o problema é de
- * enumeração; se nenhuma das duas achar, é de acesso ao pote.
+ * Teto de pedaços. O @supabase/ssr fatia em 3180 chars, então 10 pedaços são
+ * ~31 KB — muitas vezes maior que qualquer sessão real. Existe para o laço não
+ * girar sem fim se o `get` passar a devolver algo inesperado.
  */
-async function sondarNomeExato(diagnostico: string[]): Promise<void> {
+const MAX_PEDACOS = 10;
+
+/** `https://<ref>.supabase.co` -> `sb-<ref>-auth-token`. */
+function nomeBaseDoCookie(): string | null {
   const ref = SUPABASE_URL.match(/^https?:\/\/([^.]+)\./)?.[1];
-  if (!ref) {
-    diagnostico.push(`não foi possível deduzir o ref do projeto a partir de ${SUPABASE_URL}`);
-    return;
+  return ref ? `sb-${ref}-auth-token` : null;
+}
+
+async function pegarCookie(nome: string): Promise<CookieLido | null> {
+  try {
+    return ((await browser.cookies.get({ url: APP_URL, name: nome })) as CookieLido) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * CAMINHO PRINCIPAL: busca cada cookie pelo nome exato.
+ *
+ * POR QUE NÃO POR ENUMERAÇÃO (`getAll`):
+ *   Num Chrome real, com a permissão de API e a permissão de host as duas
+ *   concedidas, um único cookie store e o cookie presente no navegador,
+ *   `getAll` devolveu lista vazia em todos os filtros — enquanto `get` com o
+ *   nome exato devolveu o cookie de 3180 caracteres na hora. `get` e `getAll`
+ *   percorrem caminhos diferentes na implementação, e só o segundo falhou.
+ *
+ *   Como o nome do cookie é derivável (vem do ref do projeto Supabase), não há
+ *   motivo para depender da listagem para descobrir o que já sabemos. Menos
+ *   uma dependência de comportamento do navegador.
+ */
+async function lerPorNomeDerivado(diagnostico: string[]): Promise<CookieLido[] | null> {
+  const base = nomeBaseDoCookie();
+  if (!base) {
+    diagnostico.push(`ref do projeto não derivável de ${SUPABASE_URL} — indo para o fallback`);
+    return null;
   }
 
-  const base = `sb-${ref}-auth-token`;
-
-  for (const nome of [base, `${base}.0`]) {
-    try {
-      const cookie = await browser.cookies.get({ url: APP_URL, name: nome });
-      diagnostico.push(
-        `get(name=${nome}): ${cookie ? `ENCONTRADO (${cookie.value?.length ?? 0} chars)` : 'null'}`,
-      );
-    } catch (erro) {
-      diagnostico.push(
-        `get(name=${nome}) LANÇOU: ${erro instanceof Error ? erro.message : String(erro)}`,
-      );
-    }
+  // Formato não fatiado: a sessão cabe em um cookie só. Hoje o Supabase sempre
+  // fatia, mas isso é detalhe de implementação deles, não contrato.
+  const inteiro = await pegarCookie(base);
+  if (inteiro?.value) {
+    diagnostico.push(`get(${base}): ENCONTRADO (${inteiro.value.length} chars, sem fatiar)`);
+    return [inteiro];
   }
+  diagnostico.push(`get(${base}): null (esperado — o formato atual é fatiado)`);
+
+  const pedacos: CookieLido[] = [];
+  for (let indice = 0; indice < MAX_PEDACOS; indice += 1) {
+    const pedaco = await pegarCookie(`${base}.${indice}`);
+    if (!pedaco?.value) break;
+    pedacos.push(pedaco);
+  }
+
+  if (pedacos.length === 0) {
+    diagnostico.push(`get(${base}.0): null — nenhum pedaço encontrado`);
+    return null;
+  }
+
+  if (pedacos.length === MAX_PEDACOS) {
+    diagnostico.push(`ATENÇÃO: teto de ${MAX_PEDACOS} pedaços atingido; pode haver mais`);
+  }
+
+  diagnostico.push(
+    `get por nome: ${pedacos.length} pedaço(s) — ` +
+      pedacos.map((pedaco, i) => `.${i}=${pedaco.value.length} chars`).join(', '),
+  );
+
+  return pedacos;
 }
 
 /** Potes de cookies visíveis. Mais de um = perfis/contextos distintos. */
@@ -187,16 +231,16 @@ function juntarPedacos(cookies: CookieLido[], diagnostico: string[]): string | n
 }
 
 /**
- * Busca os cookies em camadas.
+ * Encontra os cookies da sessão.
  *
- * `getAll({url})` aplica casamento de caminho e de flag `secure`; `{domain}` é
- * mais frouxo; e a varredura final mostra TUDO que a extensão consegue
- * enxergar — que é só o dos hosts declarados em `host_permissions`, nunca o
- * navegador inteiro. Serve para separar três causas que produzem o mesmo
- * sintoma: permissão negada, domínio errado e cookie inexistente.
+ * Ordem deliberada: primeiro `get` pelo nome derivado (que funciona), e só
+ * depois a enumeração por `getAll` (que num Chrome real devolveu vazio mesmo
+ * com tudo concedido). A enumeração fica como rede de segurança para o caso de
+ * o nome não ser derivável — Supabase auto-hospedado, por exemplo. O caminho
+ * feliz não depende dela.
  */
 async function buscarCookies(diagnostico: string[]): Promise<CookieLido[] | null> {
-  if (!browser?.cookies?.getAll) {
+  if (!browser?.cookies?.get) {
     diagnostico.push('ERRO: browser.cookies indisponível — permissão "cookies" ausente no manifest');
     return null;
   }
@@ -212,7 +256,19 @@ async function buscarCookies(diagnostico: string[]): Promise<CookieLido[] | null
   diagnostico.push(`APP_URL = ${APP_URL}${hostname ? ` (host ${hostname})` : ' (URL INVÁLIDA)'}`);
 
   await conferirPermissoes(diagnostico);
-  await sondarNomeExato(diagnostico);
+
+  // ---- CAMINHO PRINCIPAL ----
+  const porNome = await lerPorNomeDerivado(diagnostico);
+  if (porNome) return porNome;
+
+  // ---- FALLBACK ----
+  diagnostico.push('nome derivado não resolveu; tentando enumeração (fallback)');
+
+  if (!browser.cookies.getAll) {
+    diagnostico.push('getAll indisponível');
+    return [];
+  }
+
   const stores = await listarCookieStores(diagnostico);
 
   // Varredura por store: se os cookies existirem em OUTRO pote que não o
