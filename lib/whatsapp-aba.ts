@@ -18,7 +18,8 @@
  *   Menos uma permissão no manifest, uma causa de falha a menos, e uma
  *   revisão mais simples na Chrome Web Store.
  */
-import type { MensagemLida, PedidoPonte, RespostaPonte } from './mensagens';
+import type { MensagemLida, MotivoNaoAbriu, PedidoPonte, RespostaPonte } from './mensagens';
+import type { AberturaDeConversa } from './whatsapp-adapter';
 
 /** Quanto esperar a conversa abrir quando foi preciso recarregar a página. */
 const ESPERA_MAXIMA_MS = 20_000;
@@ -97,28 +98,65 @@ async function acharAba(): Promise<number | null> {
   return null;
 }
 
+type Conversa = {
+  ok: boolean;
+  navegou: boolean;
+  recarregou: boolean;
+  motivo?: MotivoNaoAbriu;
+  registro: string[];
+};
+
 /**
  * Garante que a conversa do telefone está aberta na aba.
  *
- * Ordem: já aberta > clique na lista > busca interna > recarregar. As três
- * primeiras acontecem dentro da própria página, sem recarregar nada.
+ * Ordem: já aberta > clique na lista > busca interna > (só então) recarregar.
+ *
+ * A REGRA DO ÚLTIMO RECURSO: recarregar por `?phone=` derruba o WhatsApp Web
+ * inteiro e interrompe o trabalho do vendedor — quem estava no meio de outra
+ * conversa perde a tela. Por isso a URL só entra quando a Adapter devolve
+ * `sem-conversa-previa`, ou seja, quando a busca do próprio WhatsApp não
+ * encontrou NADA e a conversa provavelmente não existe.
+ *
+ * Se a conversa existe mas não deu para confirmar qual linha é
+ * (`nao-encontrada`), a resposta honesta é falhar com mensagem clara. Falhar
+ * custa uma mensagem não enviada; recarregar custa o trabalho de quem estava
+ * usando a aba, e ainda pode não resolver.
  */
-async function garantirConversa(
-  tabId: number,
-  telefone: string,
-): Promise<{ ok: boolean; navegou: boolean; recarregou: boolean }> {
-  const abertura = await mandarParaAba<'ja-aberta' | 'aberta' | 'nao-encontrada'>(tabId, {
+async function garantirConversa(tabId: number, telefone: string): Promise<Conversa> {
+  const abertura = await mandarParaAba<AberturaDeConversa>(tabId, {
     tipo: 'whatsapp/abrir-conversa',
     telefone,
   });
 
-  if (abertura === 'ja-aberta') return { ok: true, navegou: false, recarregou: false };
-  if (abertura === 'aberta') return { ok: true, navegou: true, recarregou: false };
+  if (!abertura) {
+    return {
+      ok: false,
+      navegou: false,
+      recarregou: false,
+      motivo: 'sem-resposta',
+      registro: ['a aba do WhatsApp não respondeu à ordem de abrir a conversa'],
+    };
+  }
 
-  // ÚLTIMO RECURSO: contato com quem nunca se conversou não existe na lista
-  // nem na busca — só o link `?phone=` cria a conversa, e isso RECARREGA o
-  // WhatsApp Web. Quem navega é a própria página, não `tabs.update`: assim
-  // não é preciso permissão de host para a aba.
+  const registro = abertura.registro ?? [];
+
+  if (abertura.estado === 'ja-aberta') {
+    return { ok: true, navegou: false, recarregou: false, registro };
+  }
+  if (abertura.estado === 'aberta') {
+    return { ok: true, navegou: true, recarregou: false, registro };
+  }
+
+  if (abertura.estado === 'nao-encontrada') {
+    registro.push('recarregar não foi tentado de propósito: a conversa existe na busca');
+    return { ok: false, navegou: false, recarregou: false, motivo: 'nao-encontrada', registro };
+  }
+
+  // Aqui, e só aqui: `sem-conversa-previa`. Nem a lista nem a busca acharam
+  // nada, então o link `?phone=` é o único caminho — e ele RECARREGA a página.
+  // Quem navega é a própria página, não `tabs.update`: assim não é preciso
+  // permissão de host para a aba.
+  registro.push('último recurso: abrindo por URL (a aba vai recarregar)');
   await mandarParaAba(tabId, { tipo: 'whatsapp/navegar-para', telefone });
 
   const limite = Date.now() + ESPERA_MAXIMA_MS;
@@ -130,10 +168,20 @@ async function garantirConversa(
       telefone,
     });
 
-    if (abriu === true) return { ok: true, navegou: true, recarregou: true };
+    if (abriu === true) {
+      registro.push('a URL abriu a conversa');
+      return { ok: true, navegou: true, recarregou: true, registro };
+    }
   }
 
-  return { ok: false, navegou: true, recarregou: true };
+  registro.push('mesmo pela URL a conversa não apareceu: o número provavelmente não tem WhatsApp');
+  return {
+    ok: false,
+    navegou: true,
+    recarregou: true,
+    motivo: 'sem-conversa-previa',
+    registro,
+  };
 }
 
 export async function atenderPonte(pedido: PedidoPonte): Promise<RespostaPonte> {
@@ -145,7 +193,13 @@ export async function atenderPonte(pedido: PedidoPonte): Promise<RespostaPonte> 
   }
 
   const conversa = await garantirConversa(tabId, pedido.telefone);
-  if (!conversa.ok) return { estado: 'conversa-nao-abriu' };
+  if (!conversa.ok) {
+    return {
+      estado: 'conversa-nao-abriu',
+      motivo: conversa.motivo ?? 'nao-encontrada',
+      registro: conversa.registro,
+    };
+  }
 
   if (pedido.tipo === 'whatsapp/ler') {
     const mensagens = await mandarParaAba<MensagemLida[]>(tabId, {
@@ -157,6 +211,7 @@ export async function atenderPonte(pedido: PedidoPonte): Promise<RespostaPonte> 
       mensagens: mensagens ?? [],
       navegou: conversa.navegou,
       recarregou: conversa.recarregou,
+      registro: conversa.registro,
     };
   }
 
@@ -172,5 +227,10 @@ export async function atenderPonte(pedido: PedidoPonte): Promise<RespostaPonte> 
     return { estado: 'erro', mensagem: envio.erro ?? 'Não foi possível enviar a mensagem.' };
   }
 
-  return { estado: 'ok', navegou: conversa.navegou, recarregou: conversa.recarregou };
+  return {
+    estado: 'ok',
+    navegou: conversa.navegou,
+    recarregou: conversa.recarregou,
+    registro: conversa.registro,
+  };
 }

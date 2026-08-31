@@ -232,7 +232,18 @@ const SELETORES_BUSCA = [
   '#side input[type="text"]',
 ];
 
-export type AberturaDeConversa = 'ja-aberta' | 'aberta' | 'nao-encontrada';
+/**
+ * Resultado de abrir uma conversa, com o rastro de cada estratégia.
+ *
+ * `sem-conversa-previa` é o ÚNICO estado que autoriza o último recurso da
+ * URL, que recarrega a página — e ele só acontece quando a busca do WhatsApp
+ * não devolveu nada. `nao-encontrada` significa que a conversa existe na lista
+ * mas não deu para confirmar qual é — e aí falhar é melhor que recarregar.
+ */
+export type AberturaDeConversa = {
+  estado: 'ja-aberta' | 'aberta' | 'nao-encontrada' | 'sem-conversa-previa';
+  registro: string[];
+};
 
 function mesmoNumero(a: string, b: string): boolean {
   const da = soDigitos(a);
@@ -268,61 +279,162 @@ function clicarNaLinha(linha: Element): void {
   if (alvo !== linha) (linha as HTMLElement).click?.();
 }
 
-/** Procura o telefone entre as linhas visíveis e clica. */
-async function clicarNaLista(telefone: string): Promise<boolean> {
+/**
+ * Procura o telefone entre as linhas JÁ VISÍVEIS e clica.
+ *
+ * POR QUE ISTO SÓ FUNCIONA PARA CONTATO FORA DA AGENDA:
+ *   A linha da lista lateral NÃO carrega o identificador da conversa — o
+ *   `data-id` fica nas mensagens, dentro do `#main`. Então, aqui, a única
+ *   forma de reconhecer o contato pelo número é quando o próprio TÍTULO é o
+ *   número, que é o caso de quem não está salvo na agenda.
+ *
+ *   Para "Amor❤️" — ou qualquer nome — esta estratégia não tem como acertar,
+ *   e é por isso que a busca abaixo existe: lá, quem confirma a identidade é a
+ *   conversa depois de aberta, não a linha antes do clique.
+ */
+async function clicarNaLista(telefone: string, registro: string[]): Promise<boolean> {
   const painel = document.querySelector(SELETOR_LISTA);
-  if (!painel) return false;
+  if (!painel) {
+    registro.push('lista: painel lateral não encontrado');
+    return false;
+  }
 
-  for (const linha of linhasDaLista(painel)) {
+  const linhas = linhasDaLista(painel);
+  let comTitulaNumerico = 0;
+
+  for (const linha of linhas) {
     const jid = jidDaLinha(linha);
     const doJid = jid?.match(JID_CONTATO)?.[1] ?? null;
     const titulo = tituloDaLinha(linha) ?? '';
 
+    const tituloEhNumero = TITULO_TELEFONE.test(titulo);
+    if (tituloEhNumero) comTitulaNumerico += 1;
+
     const bate =
       (doJid && mesmoNumero(doJid, telefone)) ||
-      (TITULO_TELEFONE.test(titulo) && mesmoNumero(titulo, telefone));
+      (tituloEhNumero && mesmoNumero(titulo, telefone));
 
     if (!bate) continue;
 
     clicarNaLinha(linha);
-    if (await esperarConversaAbrir(telefone)) return true;
+    if (await esperarConversaAbrir(telefone)) {
+      registro.push('lista: encontrado e aberto');
+      return true;
+    }
+    registro.push('lista: linha casou mas a conversa não abriu');
   }
 
+  registro.push(
+    `lista: ${linhas.length} linha(s) visíveis, ${comTitulaNumerico} com título numérico, ` +
+      'nenhuma reconhecível pelo número (contato salvo na agenda não expõe o número na lista)',
+  );
   return false;
 }
 
+/** Espera a lista de resultados parar de mudar, ou desistir. */
+async function esperarResultados(painel: Element, maximoMs = 2500): Promise<Element[]> {
+  let anterior = -1;
+
+  for (let esperou = 0; esperou < maximoMs; esperou += 250) {
+    await esperar(250);
+    const linhas = linhasDaLista(painel);
+
+    // Duas leituras seguidas com a mesma contagem: a lista assentou.
+    if (linhas.length > 0 && linhas.length === anterior) return linhas;
+    anterior = linhas.length;
+  }
+
+  return linhasDaLista(painel);
+}
+
+type ResultadoBusca = 'aberta' | 'nao-confirmada' | 'sem-resultados' | 'sem-campo';
+
 /**
- * Usa a busca interna do WhatsApp e abre o primeiro resultado que bate.
+ * Usa a busca interna do WhatsApp: digita o número, clica no resultado e
+ * SÓ ENTÃO confirma quem abriu.
  *
- * Tenta duas consultas: o número inteiro e só a parte local. Contato salvo na
- * agenda costuma ser encontrado pelo número completo; contato fora da agenda,
- * pelo trecho final.
+ * A confirmação é a peça central. A linha da lista não diz de quem é, mas a
+ * conversa ABERTA diz: o `data-id` das mensagens carrega o `<numero>@c.us`.
+ * Então clicamos no candidato e conferimos com `conversaAbertaEh` — clicar é
+ * palpite, a conferência é que decide.
+ *
+ * Distingue "não achei" de "achei e não confirmei", porque as duas levam a
+ * caminhos diferentes: a primeira permite o último recurso da URL (contato com
+ * quem nunca se conversou); a segunda NÃO, porque a conversa existe e
+ * recarregar a página só atrapalharia o vendedor.
  */
-async function buscarEAbrir(telefone: string): Promise<boolean> {
+async function buscarEAbrir(telefone: string, registro: string[]): Promise<ResultadoBusca> {
   const busca = primeiroElemento<HTMLElement>(SELETORES_BUSCA);
-  if (!busca) return false;
+  if (!busca) {
+    registro.push('busca: campo de busca não encontrado');
+    return 'sem-campo';
+  }
+
+  const painel = document.querySelector(SELETOR_LISTA);
+  if (!painel) {
+    registro.push('busca: painel lateral não encontrado');
+    return 'sem-campo';
+  }
 
   const digitos = soDigitos(telefone);
-  const consultas = [digitos, digitos.slice(-9)].filter(
-    (consulta, indice, todas) => consulta.length >= 8 && todas.indexOf(consulta) === indice,
+
+  // Formas diferentes porque o WhatsApp casa o texto do jeito que o contato
+  // está salvo: com DDI, sem DDI, ou com máscara.
+  const consultas = [
+    digitos,
+    digitos.slice(-11),
+    digitos.slice(-9),
+    formatarBrasileiro(digitos),
+  ].filter(
+    (consulta, indice, todas) =>
+      consulta.length >= 8 && todas.indexOf(consulta) === indice,
   );
+
+  let houveAlgumResultado = false;
 
   for (const consulta of consultas) {
     limparBusca(busca);
     busca.focus();
     document.execCommand('insertText', false, consulta);
 
-    // A lista de resultados é assíncrona; sem esta pausa lemos a lista velha.
-    await esperar(700);
+    const candidatos = await esperarResultados(painel);
+    if (candidatos.length === 0) {
+      registro.push(`busca "${consulta}": nenhum resultado`);
+      continue;
+    }
 
-    if (await clicarNaLista(telefone)) {
-      limparBusca(busca);
-      return true;
+    houveAlgumResultado = true;
+
+    // Teto de dois: cada clique troca a conversa aberta do vendedor, e errar
+    // três vezes seguidas seria mais intrusivo que desistir.
+    const paraTentar = candidatos.slice(0, 2);
+    registro.push(`busca "${consulta}": ${candidatos.length} resultado(s), testando ${paraTentar.length}`);
+
+    for (const [indice, linha] of paraTentar.entries()) {
+      clicarNaLinha(linha);
+
+      if (await esperarConversaAbrir(telefone)) {
+        registro.push(`busca "${consulta}": resultado ${indice + 1} confirmado`);
+        limparBusca(busca);
+        return 'aberta';
+      }
+
+      const aberta = WhatsAppAdapter.getCurrentContact();
+      registro.push(
+        `busca "${consulta}": resultado ${indice + 1} abriu "${aberta.nome ?? '?'}" ` +
+          `(telefone lido: ${aberta.telefone ?? 'nenhum'}) — não confere`,
+      );
     }
   }
 
   limparBusca(busca);
-  return false;
+  return houveAlgumResultado ? 'nao-confirmada' : 'sem-resultados';
+}
+
+/** "5511987654321" -> "+55 11 98765-4321", para casar com contato mascarado. */
+function formatarBrasileiro(digitos: string): string {
+  const brasil = digitos.match(/^55(\d{2})(\d{4,5})(\d{4})$/);
+  return brasil ? `+55 ${brasil[1]} ${brasil[2]}-${brasil[3]}` : digitos;
 }
 
 /**
@@ -506,16 +618,41 @@ export const WhatsAppAdapter = {
    *   2. está na lista       -> clica na linha
    *   3. não está na lista   -> usa a busca interna do WhatsApp e clica
    *
-   * Só quando as três falham é que sobra a navegação por URL, e ela fica com
-   * quem chamou — que avisa o vendedor antes, porque a página vai recarregar.
+   * Nenhuma delas recarrega nada. A navegação por URL não acontece aqui: este
+   * método só CLASSIFICA a falha, e quem chamou decide. E só há um estado que
+   * autoriza recarregar — `sem-conversa-previa`, quando a busca do próprio
+   * WhatsApp não devolveu resultado nenhum. Com resultados na tela a conversa
+   * existe, e recarregar seria interromper o vendedor à toa.
+   *
+   * O `registro` acompanha a resposta com o que cada estratégia tentou e por
+   * que desistiu: sem ele, uma falha aqui vira adivinhação.
    */
   async abrirConversaPorTelefone(telefone: string): Promise<AberturaDeConversa> {
-    if (WhatsAppAdapter.conversaAbertaEh(telefone)) return 'ja-aberta';
+    const registro: string[] = [];
 
-    if (await clicarNaLista(telefone)) return 'aberta';
-    if (await buscarEAbrir(telefone)) return 'aberta';
+    if (WhatsAppAdapter.conversaAbertaEh(telefone)) {
+      return { estado: 'ja-aberta', registro: ['já era a conversa aberta'] };
+    }
+    registro.push('não é a conversa aberta; tentando a lista');
 
-    return 'nao-encontrada';
+    if (await clicarNaLista(telefone, registro)) {
+      return { estado: 'aberta', registro };
+    }
+
+    const busca = await buscarEAbrir(telefone, registro);
+    if (busca === 'aberta') return { estado: 'aberta', registro };
+
+    // A DISTINÇÃO QUE IMPORTA: só quando a busca não devolveu NADA é que se
+    // pode supor que nunca houve conversa — e só aí a URL, que recarrega a
+    // página, é aceitável. Com resultados na tela, a conversa existe, e
+    // recarregar interromperia o trabalho do vendedor sem necessidade.
+    if (busca === 'sem-resultados') {
+      registro.push('nenhuma busca encontrou a conversa: provavelmente é contato novo');
+      return { estado: 'sem-conversa-previa', registro };
+    }
+
+    registro.push('a conversa existe, mas não deu para confirmar qual é — sem recarregar');
+    return { estado: 'nao-encontrada', registro };
   },
 
   /**

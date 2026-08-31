@@ -176,11 +176,32 @@ export type PedidoPonte =
   | { tipo: 'whatsapp/ler'; telefone: string }
   | { tipo: 'whatsapp/enviar'; telefone: string; texto: string };
 
+/**
+ * Por que a conversa não abriu.
+ *
+ * A distinção existe porque cada motivo pede uma frase diferente na tela: um
+ * número sem WhatsApp e uma conversa que está ali mas não deu para confirmar
+ * são problemas distintos, e tratá-los com a mesma mensagem manda o vendedor
+ * procurar o defeito no lugar errado.
+ */
+export type MotivoNaoAbriu =
+  /** Nem a lista nem a busca acharam. Nem o link `?phone=` abriu a conversa. */
+  | 'sem-conversa-previa'
+  /** A busca achou linhas, mas nenhuma se confirmou como a conversa pedida. */
+  | 'nao-encontrada'
+  /** A aba do WhatsApp não respondeu à ordem. */
+  | 'sem-resposta';
+
 export type RespostaPonte =
   /** Não há aba do WhatsApp Web aberta. */
   | { estado: 'sem-aba' }
-  /** A aba existe, mas a conversa pedida não abriu a tempo. */
-  | { estado: 'conversa-nao-abriu' }
+  /** A aba existe, mas a conversa pedida não abriu. */
+  | {
+      estado: 'conversa-nao-abriu';
+      motivo: MotivoNaoAbriu;
+      /** Cada estratégia tentada e por que falhou, para o console do app. */
+      registro: string[];
+    }
   | { estado: 'erro'; mensagem: string }
   | {
       estado: 'ok';
@@ -189,4 +210,6 @@ export type RespostaPonte =
       navegou?: boolean;
       /** Precisou recarregar o WhatsApp (contato sem conversa anterior). */
       recarregou?: boolean;
+      /** Mesmo no sucesso: qual estratégia abriu a conversa. */
+      registro?: string[];
     };

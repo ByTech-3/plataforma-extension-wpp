@@ -887,7 +887,13 @@ browser.runtime.onMessage.addListener(
         .then(responder)
         .catch((erro) => {
           console.error('[ByTech3] Falha ao abrir a conversa.', erro);
-          responder('nao-encontrada');
+          // `nao-encontrada`, e não `sem-conversa-previa`: um erro inesperado
+          // não é prova de que a conversa não existe, e só a segunda autoriza
+          // recarregar a página.
+          responder({
+            estado: 'nao-encontrada',
+            registro: [`erro inesperado ao abrir a conversa: ${String(erro)}`],
+          });
         });
       return true;
     }
