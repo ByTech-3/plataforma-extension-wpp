@@ -1,15 +1,33 @@
+/* Mesma linguagem visual do app e do painel: neutro frio, verde só na ação. */
 .painel {
+  --superficie: #ffffff;
+  --superficie-2: #f4f4f5;
+  --texto: #18181b;
+  --texto-2: #52525b;
+  --texto-3: #a1a1aa;
+  --linha: #e4e4e7;
+  --linha-forte: #d4d4d8;
+  --acao: #059669;
+  --acao-forte: #047857;
+  --alerta: #b45309;
+  --alerta-suave: #fffbeb;
+  --alerta-linha: #fcd34d;
+  --perigo: #b91c1c;
+  --perigo-suave: #fef2f2;
+  --perigo-linha: #fca5a5;
+  --raio: 10px;
+
   width: 300px;
-  background: #fff;
-  color: #111827;
+  background: var(--superficie);
+  color: var(--texto);
 }
 
 .cabecalho {
   padding: 12px 16px;
-  background: #059669;
-  color: #fff;
-  font-size: 14px;
-  font-weight: 700;
+  border-bottom: 1px solid var(--linha);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .corpo {
@@ -19,7 +37,7 @@
 .corpo p {
   margin: 0 0 4px;
   font-size: 13px;
-  color: #374151;
+  color: var(--texto-2);
 }
 
 .bloco + .bloco {
@@ -28,70 +46,82 @@
 
 .rotulo {
   font-size: 11px;
+  font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #6b7280;
+  color: var(--texto-3);
 }
 
 .valor {
   margin-top: 2px;
   font-size: 14px;
   font-weight: 600;
+  color: var(--texto);
   word-break: break-word;
 }
 
 .fraco {
-  color: #6b7280;
+  color: var(--texto-3);
+}
+
+.aviso,
+.erro {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid;
+  border-radius: var(--raio);
+  font-size: 12px;
 }
 
 .aviso {
-  margin-top: 12px;
-  padding: 10px 12px;
-  border: 1px solid #fcd34d;
-  border-radius: 8px;
-  background: #fffbeb;
-  color: #92400e;
-  font-size: 12px;
+  background: var(--alerta-suave);
+  border-color: var(--alerta-linha);
+  color: var(--alerta);
 }
 
 .erro {
-  padding: 10px 12px;
-  border: 1px solid #fca5a5;
-  border-radius: 8px;
-  background: #fef2f2;
-  color: #991b1b;
-  font-size: 12px;
+  background: var(--perigo-suave);
+  border-color: var(--perigo-linha);
+  color: var(--perigo);
 }
 
 .acao,
 .secundaria {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   margin-top: 12px;
   padding: 9px 13px;
-  border-radius: 8px;
+  border-radius: var(--raio);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   text-decoration: none;
+  transition: background 0.12s ease;
 }
 
 .acao {
   border: none;
-  background: #059669;
+  background: var(--acao);
   color: #fff;
 }
 
 .acao:hover {
-  background: #047857;
+  background: var(--acao-forte);
+}
+
+.acao:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .secundaria {
   margin-left: 8px;
-  border: 1px solid rgba(0, 0, 0, 0.15);
-  background: #fff;
-  color: #374151;
+  border: 1px solid var(--linha-forte);
+  background: var(--superficie);
+  color: var(--texto);
 }
 
 .secundaria:hover {
-  background: #f9fafb;
+  background: var(--superficie-2);
 }
