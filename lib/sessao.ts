@@ -37,6 +37,60 @@ export type SessaoDoApp = {
   email: string | null;
 };
 
+/**
+ * DIAGNÓSTICO TEMPORÁRIO (regressão de sessão).
+ *
+ * Reativado para separar as causas que produzem o MESMO sintoma — "sem
+ * sessão", sem erro nenhum: permissão de host retida pelo Chrome, cookie
+ * ausente e nome não derivável. Só nomes, contagens e tamanhos; nunca o valor
+ * do cookie nem o token, que dariam a sessão inteira a quem lesse o console.
+ */
+export type LeituraSessao = { sessao: SessaoDoApp | null; diagnostico: string[] };
+
+/**
+ * A permissão está DECLARADA no manifest e CONCEDIDA em runtime?
+ *
+ * São coisas diferentes, e a diferença é invisível no comportamento: com a
+ * permissão de host retida, `chrome.cookies` continua existindo e devolve
+ * nulo, sem erro. Quando a extensão já instalada ganha um host NOVO no
+ * manifest — foi o que aconteceu no bloco E, com o WhatsApp —, o Chrome pode
+ * não conceder o conjunto novo sozinho.
+ */
+async function conferirPermissoes(diagnostico: string[]): Promise<void> {
+  const manifest = browser.runtime.getManifest() as {
+    permissions?: string[];
+    host_permissions?: string[];
+  };
+
+  diagnostico.push(
+    `manifest: permissions=[${(manifest.permissions ?? []).join(', ')}] | ` +
+      `hosts=[${(manifest.host_permissions ?? []).join(', ')}]`,
+  );
+
+  if (!browser.permissions?.contains) {
+    diagnostico.push('browser.permissions indisponível');
+    return;
+  }
+
+  // O tipo de `contains` exige a união literal das permissões do manifest; a
+  // lista aqui é montada em runtime, então o `as` é a saída honesta.
+  type PedidoPermissao = Parameters<typeof browser.permissions.contains>[0];
+
+  const pedidos: [string, PedidoPermissao][] = [
+    ['API cookies', { permissions: ['cookies'] } as PedidoPermissao],
+    ['host do app', { origins: [`${APP_URL}/*`] } as PedidoPermissao],
+    ['host do WhatsApp', { origins: ['https://web.whatsapp.com/*'] } as PedidoPermissao],
+  ];
+
+  for (const [rotulo, pedido] of pedidos) {
+    try {
+      diagnostico.push(`permissão "${rotulo}": ${await browser.permissions.contains(pedido)}`);
+    } catch (erro) {
+      diagnostico.push(`contains(${rotulo}) LANÇOU: ${erro instanceof Error ? erro.message : erro}`);
+    }
+  }
+}
+
 /** `sb-<ref>-auth-token`, com ou sem sufixo de pedaço (`.0`, `.1`, ...). */
 const NOME_COOKIE = /^sb-.+-auth-token(\.(\d+))?$/;
 
@@ -148,29 +202,57 @@ function juntarPedacos(cookies: CookieLido[]): string | null {
  * no console o que for falha de verdade — cookie ilegível, JSON corrompido —,
  * nunca o caso comum de não haver login.
  */
-export async function lerSessaoDoApp(): Promise<SessaoDoApp | null> {
+export async function lerSessaoDoApp(): Promise<LeituraSessao> {
+  const diagnostico: string[] = [];
+
   if (!browser?.cookies?.get) {
-    console.warn('[ByTech3] browser.cookies indisponível — permissão "cookies" ausente.');
-    return null;
+    diagnostico.push('ERRO: browser.cookies indisponível — permissão "cookies" ausente.');
+    console.warn('[ByTech3] browser.cookies indisponível.');
+    return { sessao: null, diagnostico };
   }
 
-  const cookies = (await lerPorNomeDerivado()) ?? (await lerPorEnumeracao());
-  if (cookies.length === 0) return null;
+  diagnostico.push(`APP_URL = ${APP_URL}`);
+  diagnostico.push(`nome base do cookie = ${nomeBaseDoCookie() ?? 'NÃO DERIVÁVEL'}`);
+  await conferirPermissoes(diagnostico);
+
+  const porNome = await lerPorNomeDerivado();
+  diagnostico.push(
+    porNome
+      ? `get por nome: ${porNome.length} pedaço(s) — ${porNome
+          .map((pedaco, i) => `.${i}=${pedaco.value.length} chars`)
+          .join(', ')}`
+      : 'get por nome: nada encontrado',
+  );
+
+  const cookies = porNome ?? (await lerPorEnumeracao());
+  if (!porNome) {
+    diagnostico.push(`fallback getAll: ${cookies.length} cookie(s)`);
+  }
+
+  if (cookies.length === 0) return { sessao: null, diagnostico };
 
   const bruto = juntarPedacos(cookies);
-  if (!bruto) return null;
+  if (!bruto) {
+    diagnostico.push('remontagem falhou: nenhum pedaço com nome de sessão');
+    return { sessao: null, diagnostico };
+  }
+
+  diagnostico.push(
+    `valor remontado: ${bruto.length} chars | prefixo base64-: ${bruto.startsWith(PREFIXO_BASE64)}`,
+  );
 
   let texto: string | null = bruto;
   if (bruto.startsWith(PREFIXO_BASE64)) {
     try {
       texto = deBase64Url(bruto.slice(PREFIXO_BASE64.length));
     } catch (erro) {
+      diagnostico.push(`ERRO na decodificação base64url: ${erro instanceof Error ? erro.message : erro}`);
       console.warn('[ByTech3] cookie de sessão ilegível (base64).', erro);
       texto = null;
     }
   }
 
-  if (!texto) return null;
+  if (!texto) return { sessao: null, diagnostico };
 
   try {
     const sessao = JSON.parse(texto) as {
@@ -179,18 +261,31 @@ export async function lerSessaoDoApp(): Promise<SessaoDoApp | null> {
       user?: { id?: string; email?: string };
     };
 
-    if (!sessao.access_token) return null;
+    if (!sessao.access_token) {
+      diagnostico.push(`JSON válido, mas SEM access_token. Campos: ${Object.keys(sessao).join(', ')}`);
+      return { sessao: null, diagnostico };
+    }
+
+    diagnostico.push(
+      `sessão lida: token com ${sessao.access_token.length} chars | expira ` +
+        `${sessao.expires_at ? new Date(sessao.expires_at * 1000).toISOString() : 'sem data'} | ` +
+        `usuário ${sessao.user?.email ?? 'sem e-mail'}`,
+    );
 
     return {
-      access_token: sessao.access_token,
-      expires_at: sessao.expires_at ?? null,
-      usuario_id: sessao.user?.id ?? null,
-      email: sessao.user?.email ?? null,
+      sessao: {
+        access_token: sessao.access_token,
+        expires_at: sessao.expires_at ?? null,
+        usuario_id: sessao.user?.id ?? null,
+        email: sessao.user?.email ?? null,
+      },
+      diagnostico,
     };
-  } catch {
+  } catch (erro) {
     // Cookie pela metade (o app estava gravando durante a leitura). Tratar
     // como ausente é melhor que operar com sessão corrompida.
-    return null;
+    diagnostico.push(`ERRO no JSON.parse: ${erro instanceof Error ? erro.message : erro}`);
+    return { sessao: null, diagnostico };
   }
 }
 

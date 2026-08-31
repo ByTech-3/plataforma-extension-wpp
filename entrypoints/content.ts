@@ -673,10 +673,23 @@ async function enviar<T>(mensagem: Mensagem, aoFalhar: T): Promise<T | 'descarre
 }
 
 async function pedirSessao(): Promise<EstadoSessao | 'descarregada'> {
-  return enviar<EstadoSessao>({ tipo: 'sessao/estado' }, {
+  const estado = await enviar<EstadoSessao>({ tipo: 'sessao/estado' }, {
     estado: 'erro',
     mensagem: 'Não foi possível verificar seu login. Tente de novo.',
   });
+
+  // DIAGNÓSTICO TEMPORÁRIO (regressão de sessão): o console do service worker
+  // do MV3 perde o histórico ao hibernar; este, o da página, fica aberto.
+  if (estado !== 'descarregada') {
+    console.info(
+      `[ByTech3] sessão: ${estado?.estado ?? 'resposta vazia'}` +
+        (estado?.diagnostico?.length
+          ? `\n${estado.diagnostico.map((linha) => `  · ${linha}`).join('\n')}`
+          : ''),
+    );
+  }
+
+  return estado;
 }
 
 async function pedirConsulta(contato: ContatoAtual): Promise<ResultadoConsulta | 'descarregada'> {

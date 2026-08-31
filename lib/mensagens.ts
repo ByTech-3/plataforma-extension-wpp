@@ -56,7 +56,7 @@ export type Organizacao = {
  * Estados possíveis da sessão. `sem-sessao` e `expirada` são situações normais
  * do produto, com convite para entrar no app — não são erro.
  */
-export type EstadoSessao =
+export type EstadoSessao = (
   | { estado: 'sem-sessao' }
   | { estado: 'expirada' }
   | { estado: 'sem-organizacao'; email: string | null }
@@ -65,7 +65,11 @@ export type EstadoSessao =
       estado: 'conectada';
       email: string | null;
       organizacao: Organizacao;
-    };
+    }
+) & {
+  /** Rastro temporário da leitura da sessão (regressão em investigação). */
+  diagnostico?: string[];
+};
 
 export type TagDoLead = { id: string; nome: string; cor: string | null };
 

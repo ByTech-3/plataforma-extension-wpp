@@ -40,9 +40,17 @@ async function obterEstadoSessao(): Promise<EstadoSessao> {
     return { estado: 'erro', mensagem: erroConfiguracao };
   }
 
-  const sessao = await lerSessaoDoApp();
-  if (!sessao) return { estado: 'sem-sessao' };
-  if (estaExpirada(sessao)) return { estado: 'expirada' };
+  const { sessao, diagnostico } = await lerSessaoDoApp();
+
+  // DIAGNÓSTICO TEMPORÁRIO: o console do service worker do MV3 perde o
+  // histórico ao hibernar, então o rastro também viaja na resposta e é
+  // registrado no console da página, que fica aberto.
+  console.info(
+    `[ByTech3] leitura da sessão:\n${diagnostico.map((linha) => `  · ${linha}`).join('\n')}`,
+  );
+
+  if (!sessao) return { estado: 'sem-sessao', diagnostico };
+  if (estaExpirada(sessao)) return { estado: 'expirada', diagnostico };
 
   const supabase = clienteComSessao(sessao.access_token);
   const { data, error } = await supabase.rpc('meu_contexto');
@@ -103,7 +111,7 @@ async function comSessao<T>(
     return aoFalhar('sessao', 'Sua sessão expirou. Abra o ByTech3 para reconectar.');
   }
 
-  const sessao = await lerSessaoDoApp();
+  const { sessao } = await lerSessaoDoApp();
   if (!sessao?.usuario_id) {
     return aoFalhar('sessao', 'Sua sessão expirou. Abra o ByTech3 para reconectar.');
   }
