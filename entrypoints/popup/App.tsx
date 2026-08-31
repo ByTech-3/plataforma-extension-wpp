@@ -94,6 +94,13 @@ function conteudo(estado: EstadoSessao | null, verificar: () => void) {
     );
   }
 
+  // O `permissions.request()` só é aceito a partir de um gesto do usuário numa
+  // PÁGINA da extensão — content script não pode chamá-lo. Por isso o botão
+  // que resolve mora aqui, no popup, e o painel do WhatsApp aponta para cá.
+  if (estado.estado === 'sem-permissao') {
+    return <PedirPermissao host={estado.host} aoConceder={verificar} />;
+  }
+
   if (estado.estado === 'sem-organizacao') {
     return (
       <>
@@ -125,3 +132,53 @@ function Dado({ rotulo, valor }: { rotulo: string; valor: string }) {
 }
 
 export default App;
+
+/**
+ * Concede o acesso ao domínio do app.
+ *
+ * Este é o caminho de saída do problema mais chato desta extensão: toda
+ * atualização que amplie o manifest faz o Chrome RETER as permissões de host
+ * já concedidas, e a extensão passa a se comportar como se o vendedor tivesse
+ * saído da conta. Um clique aqui devolve o acesso, sem reinstalar nada.
+ */
+function PedirPermissao({ host, aoConceder }: { host: string; aoConceder: () => void }) {
+  const [pedindo, setPedindo] = useState(false);
+  const [recusou, setRecusou] = useState(false);
+
+  async function pedir() {
+    setPedindo(true);
+    setRecusou(false);
+
+    try {
+      const concedido = await browser.permissions.request({
+        origins: [host],
+      } as Parameters<typeof browser.permissions.request>[0]);
+
+      if (concedido) aoConceder();
+      else setRecusou(true);
+    } catch {
+      setRecusou(true);
+    } finally {
+      setPedindo(false);
+    }
+  }
+
+  return (
+    <>
+      <p className="aviso">
+        A extensão foi atualizada e o navegador está esperando sua autorização. Seu login continua
+        ativo — é só a permissão de acesso ao ByTech3 que falta.
+      </p>
+
+      <button type="button" className="acao" onClick={() => void pedir()} disabled={pedindo}>
+        {pedindo ? 'Aguardando…' : 'Autorizar acesso'}
+      </button>
+
+      {recusou && (
+        <p className="erro">
+          A autorização não foi concedida. Sem ela a extensão não consegue reconhecer seu login.
+        </p>
+      )}
+    </>
+  );
+}

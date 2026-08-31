@@ -17,16 +17,21 @@ export default defineConfig({
     // histórico. O que a extensão não precisa, ela não pede.
     permissions: ['cookies', 'storage'],
 
+    // NÃO acrescente hosts aqui sem necessidade real. Quando uma extensão JÁ
+    // INSTALADA ganha um host novo, o Chrome RETÉM todo o conjunto até o
+    // usuário reautorizar — e nesse estado `cookies.get` devolve nulo sem
+    // erro, fazendo a extensão parecer deslogada. Foi exatamente isso que
+    // aconteceu quando `web.whatsapp.com` entrou aqui no bloco E.
+    //
+    // O WhatsApp saiu da lista: falar com a aba dele não precisa de permissão
+    // de host, porque o nosso content script já roda lá (declarado em
+    // `content_scripts`). Quem descobre a aba é o próprio content script, que
+    // se apresenta ao background — não o `tabs.query({url})`, que era o único
+    // motivo da permissão.
     host_permissions: [
       'https://plataforma-web-wpp.vercel.app/*',
       'http://localhost:3000/*',
       'https://*.supabase.co/*',
-      // O envio pelo app precisa achar a aba do WhatsApp, navegar até a
-      // conversa e falar com o content script dela. Com permissão de host, o
-      // `tabs.query({url})` funciona SEM a permissão `tabs` — que daria acesso
-      // ao título e à URL de todas as abas do vendedor, inclusive as que não
-      // têm nada a ver com este produto.
-      'https://web.whatsapp.com/*',
     ],
   },
 });

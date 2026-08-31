@@ -2,16 +2,34 @@
  * Comando da aba do WhatsApp a partir do service worker.
  *
  * O trabalho de DOM em si é todo da WhatsAppAdapter, no content script. Este
- * arquivo só acha a aba certa, garante que a conversa pedida está aberta e
- * encaminha a ordem.
+ * arquivo só acha a aba certa e encaminha a ordem.
+ *
+ * POR QUE UM REGISTRO DE ABAS, E NÃO `tabs.query({url})`:
+ *   O filtro por URL do `tabs.query` exige permissão de host para aquele
+ *   endereço. Foi por causa dessa permissão — acrescentada ao manifest depois
+ *   que a extensão já estava instalada — que o Chrome reteve TODAS as
+ *   permissões de host e a leitura da sessão parou de funcionar.
+ *
+ *   Aqui a aba se apresenta: o content script do WhatsApp avisa o background
+ *   quando carrega, e o id fica guardado. Falar com uma aba onde o NOSSO
+ *   content script já roda não exige permissão nenhuma além da própria
+ *   injeção, que já está declarada em `content_scripts`.
+ *
+ *   Menos uma permissão no manifest, uma causa de falha a menos, e uma
+ *   revisão mais simples na Chrome Web Store.
  */
 import type { MensagemLida, PedidoPonte, RespostaPonte } from './mensagens';
 
-const URL_WHATSAPP = '*://web.whatsapp.com/*';
-
-/** Quanto esperar a conversa abrir depois de mandar a aba navegar. */
+/** Quanto esperar a conversa abrir quando foi preciso recarregar a página. */
 const ESPERA_MAXIMA_MS = 20_000;
 const INTERVALO_TENTATIVA_MS = 700;
+
+/**
+ * `storage.session` sobrevive à hibernação do service worker (que acontece a
+ * cada poucos segundos de ociosidade) e é limpo ao fechar o navegador — que é
+ * exatamente o tempo de vida de uma aba aberta.
+ */
+const CHAVE_ABAS = 'abas_whatsapp';
 
 function esperar(ms: number): Promise<void> {
   return new Promise((resolver) => setTimeout(resolver, ms));
@@ -20,42 +38,75 @@ function esperar(ms: number): Promise<void> {
 type OrdemParaAba =
   | { tipo: 'whatsapp/conversa-aberta-e'; telefone: string }
   | { tipo: 'whatsapp/abrir-conversa'; telefone: string }
+  | { tipo: 'whatsapp/navegar-para'; telefone: string }
   | { tipo: 'whatsapp/ler-mensagens' }
   | { tipo: 'whatsapp/enviar-mensagem'; texto: string };
+
+async function abasConhecidas(): Promise<number[]> {
+  try {
+    const guardado = await browser.storage.session.get(CHAVE_ABAS);
+    const ids = guardado[CHAVE_ABAS];
+    return Array.isArray(ids) ? (ids as number[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function guardarAbas(ids: number[]): Promise<void> {
+  try {
+    await browser.storage.session.set({ [CHAVE_ABAS]: [...new Set(ids)] });
+  } catch {
+    // Sem registro, a próxima carga da aba do WhatsApp reapresenta.
+  }
+}
+
+/** O content script do WhatsApp avisa que está de pé nesta aba. */
+export async function registrarAba(tabId: number): Promise<void> {
+  const ids = await abasConhecidas();
+  if (!ids.includes(tabId)) await guardarAbas([...ids, tabId]);
+}
+
+async function esquecerAba(tabId: number): Promise<void> {
+  const ids = await abasConhecidas();
+  await guardarAbas(ids.filter((id) => id !== tabId));
+}
 
 async function mandarParaAba<T>(tabId: number, ordem: OrdemParaAba): Promise<T | null> {
   try {
     return (await browser.tabs.sendMessage(tabId, ordem)) as T;
   } catch {
-    // Aba recarregando: o content script ainda não está escutando.
-    return null;
-  }
-}
-
-/** A primeira aba do WhatsApp Web, ou `null` se não houver nenhuma. */
-async function acharAba(): Promise<number | null> {
-  try {
-    const abas = await browser.tabs.query({ url: URL_WHATSAPP });
-    return abas[0]?.id ?? null;
-  } catch {
+    // Aba fechada, recarregando, ou content script ainda não escutando.
     return null;
   }
 }
 
 /**
+ * A primeira aba do WhatsApp que ainda responde.
+ *
+ * Testar em vez de confiar no registro: aba fechada continua no storage até
+ * alguém tentar falar com ela.
+ */
+async function acharAba(): Promise<number | null> {
+  for (const tabId of await abasConhecidas()) {
+    const vivo = await mandarParaAba<boolean>(tabId, { tipo: 'whatsapp/conversa-aberta-e', telefone: '' });
+    // `false` é resposta válida (não é a conversa pedida); `null` é silêncio.
+    if (vivo !== null) return tabId;
+    await esquecerAba(tabId);
+  }
+
+  return null;
+}
+
+/**
  * Garante que a conversa do telefone está aberta na aba.
  *
- * Se já estiver, não faz nada. Se a aba estiver em OUTRA conversa, navega até
- * a certa — a decisão do produto foi levar o vendedor até lá em vez de recusar
- * e mandar ele procurar. Navegar recarrega o WhatsApp Web, por isso a espera
- * generosa: é a página inteira subindo de novo.
+ * Ordem: já aberta > clique na lista > busca interna > recarregar. As três
+ * primeiras acontecem dentro da própria página, sem recarregar nada.
  */
 async function garantirConversa(
   tabId: number,
   telefone: string,
 ): Promise<{ ok: boolean; navegou: boolean; recarregou: boolean }> {
-  // Caminho normal: a própria página abre a conversa, clicando na lista ou
-  // usando a busca interna. Nada recarrega, e leva menos de um segundo.
   const abertura = await mandarParaAba<'ja-aberta' | 'aberta' | 'nao-encontrada'>(tabId, {
     tipo: 'whatsapp/abrir-conversa',
     telefone,
@@ -65,10 +116,10 @@ async function garantirConversa(
   if (abertura === 'aberta') return { ok: true, navegou: true, recarregou: false };
 
   // ÚLTIMO RECURSO: contato com quem nunca se conversou não existe na lista
-  // nem na busca — só o link `?phone=` cria a conversa. Isso RECARREGA o
-  // WhatsApp Web, então só acontece quando não há outro caminho.
-  const digitos = telefone.replace(/\D/g, '');
-  await browser.tabs.update(tabId, { url: `https://web.whatsapp.com/send?phone=${digitos}` });
+  // nem na busca — só o link `?phone=` cria a conversa, e isso RECARREGA o
+  // WhatsApp Web. Quem navega é a própria página, não `tabs.update`: assim
+  // não é preciso permissão de host para a aba.
+  await mandarParaAba(tabId, { tipo: 'whatsapp/navegar-para', telefone });
 
   const limite = Date.now() + ESPERA_MAXIMA_MS;
   while (Date.now() < limite) {

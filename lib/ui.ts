@@ -19,17 +19,21 @@ export const ESTILOS = `
   :host { all: initial; }
   * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
 
+  /* Botão redondo, na altura da mão: um terço da tela a partir do topo, e não
+     no rodapé, onde disputava espaço com o campo de digitação do WhatsApp. */
   .badge {
-    position: fixed; right: 16px; bottom: 16px; z-index: 2147483000;
-    display: flex; align-items: center; gap: 8px;
-    padding: 10px 14px; border: none; border-radius: 999px;
+    position: fixed; right: 18px; top: 34%; z-index: 2147483000;
+    display: flex; align-items: center; justify-content: center;
+    width: 52px; height: 52px; padding: 0;
+    border: none; border-radius: 50%;
     background: #059669; color: #fff;
-    font-size: 13px; font-weight: 600; line-height: 1;
-    box-shadow: 0 2px 12px rgba(0,0,0,.25); cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0,0,0,.28); cursor: pointer;
+    transition: transform .12s ease, background .12s ease;
   }
-  .badge:hover { background: #047857; }
+  .badge:hover { background: #047857; transform: scale(1.06); }
+  .badge:active { transform: scale(.97); }
   .badge[hidden] { display: none; }
-  .ponto { width: 8px; height: 8px; border-radius: 50%; background: #d1fae5; }
+  .badge svg { width: 24px; height: 24px; display: block; }
 
   .painel {
     position: fixed; top: 0; right: 0; z-index: 2147483000;

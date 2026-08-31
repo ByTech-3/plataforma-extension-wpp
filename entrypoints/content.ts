@@ -56,8 +56,31 @@ export default defineContentScript({
 
   main() {
     montar();
+    apresentarAba();
   },
 });
+
+/**
+ * Avisa o background que esta aba do WhatsApp existe.
+ *
+ * É o que substitui o `tabs.query({url})`, que exigiria permissão de host —
+ * a mesma permissão cuja adição fez o Chrome reter todas as outras. Reapresenta
+ * quando a aba volta a ficar visível, porque o service worker hiberna e o
+ * registro pode se perder.
+ */
+function apresentarAba(): void {
+  const avisar = () => {
+    if (!browser.runtime?.id) return;
+    browser.runtime.sendMessage({ tipo: 'whatsapp/registrar' }).catch(() => {
+      // Extensão descarregada: o painel já trata e pede recarga da página.
+    });
+  };
+
+  avisar();
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) avisar();
+  });
+}
 
 function montar() {
   if (document.getElementById(ID_RAIZ)) return;
@@ -75,8 +98,16 @@ function montar() {
   const badge = document.createElement('button');
   badge.className = 'badge';
   badge.type = 'button';
-  badge.innerHTML = '<span class="ponto"></span><span>ByTech3 CRM</span>';
+  // Ícone em vez de texto: redondo e pequeno, o rótulo não caberia. O nome
+  // fica no `title` e no `aria-label`, para o mouse e para o leitor de tela.
+  badge.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+    '<path d="M12 3a9 9 0 0 0-7.7 13.7L3 21l4.4-1.2A9 9 0 1 0 12 3Z" ' +
+    'stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>' +
+    '<path d="M8.5 12.5h7M8.5 9.5h7M8.5 15.5h4" stroke="currentColor" ' +
+    'stroke-width="1.8" stroke-linecap="round"/></svg>';
   badge.title = 'Abrir o painel do ByTech3';
+  badge.setAttribute('aria-label', 'Abrir o painel do ByTech3 CRM');
 
   const painel = document.createElement('aside');
   painel.className = 'painel';
@@ -613,6 +644,24 @@ function desenharSessao(area: HTMLElement, estado: EstadoSessao, recarregar: () 
     return;
   }
 
+  // Permissão retida NÃO é falta de login. Dizer "entre no ByTech3" para quem
+  // já está logado manda o vendedor tentar o que não resolve.
+  if (estado.estado === 'sem-permissao') {
+    area.append(
+      caixa(
+        'aviso',
+        'A extensão foi atualizada e o navegador está esperando você autorizar o acesso ao ByTech3.',
+      ),
+      paragrafo(
+        'Clique no ícone do ByTech3 na barra do navegador (ao lado da barra de endereço) e ' +
+          'toque em "Autorizar acesso". Seu login continua ativo — é só a permissão que falta.',
+        'texto',
+      ),
+      botao('Já autorizei — verificar', recarregar, 'secundaria'),
+    );
+    return;
+  }
+
   if (estado.estado === 'sem-organizacao') {
     area.append(
       paragrafo('Sua conta ainda não faz parte de uma organização.'),
@@ -822,6 +871,14 @@ browser.runtime.onMessage.addListener(
   ) => {
     if (ordem?.tipo === 'whatsapp/conversa-aberta-e') {
       responder(WhatsAppAdapter.conversaAbertaEh(ordem.telefone ?? ''));
+      return false;
+    }
+
+    // Recarregar a própria página em vez de `tabs.update`: assim o background
+    // não precisa de permissão de host para esta aba.
+    if (ordem?.tipo === 'whatsapp/navegar-para') {
+      window.location.href = WhatsAppAdapter.enderecoDaConversa(ordem.telefone ?? '');
+      responder(true);
       return false;
     }
 

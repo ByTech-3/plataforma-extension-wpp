@@ -24,6 +24,7 @@ export type Origem = (typeof ORIGENS)[number];
 export const ORIGEM_PADRAO_EXTENSAO: Origem = 'WhatsApp direto';
 
 export type Mensagem =
+  | { tipo: 'whatsapp/registrar' }
   | { tipo: 'ponte'; pedido: PedidoPonte }
   | { tipo: 'conversas/sincronizar'; conversas: ConversaCapturada[] }
   | { tipo: 'funis/destinos' }
@@ -58,6 +59,11 @@ export type Organizacao = {
  */
 export type EstadoSessao = (
   | { estado: 'sem-sessao' }
+  /**
+   * O Chrome não concedeu o acesso ao domínio do app. É diferente de não ter
+   * login: a sessão existe, a extensão é que não pode lê-la.
+   */
+  | { estado: 'sem-permissao'; host: string }
   | { estado: 'expirada' }
   | { estado: 'sem-organizacao'; email: string | null }
   | { estado: 'erro'; mensagem: string }

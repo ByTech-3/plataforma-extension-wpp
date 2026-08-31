@@ -47,6 +47,34 @@ export type SessaoDoApp = {
  */
 export type LeituraSessao = { sessao: SessaoDoApp | null; diagnostico: string[] };
 
+/** O host que a extensão precisa poder ler para achar a sessão do vendedor. */
+export const HOST_DO_APP = `${APP_URL}/*`;
+
+/**
+ * O Chrome concedeu, de fato, o acesso ao domínio do app?
+ *
+ * DECLARADO NO MANIFEST ≠ CONCEDIDO EM RUNTIME. Quando uma extensão JÁ
+ * INSTALADA ganha uma permissão de host nova — o que acontece em toda
+ * atualização pela Chrome Web Store que amplie o manifest —, o Chrome retém o
+ * conjunto e espera o usuário conceder. Nesse estado, `chrome.cookies`
+ * continua existindo e devolve NULO, sem erro nenhum.
+ *
+ * Sem esta checagem, o produto diz "faça login" para quem já está logado. É
+ * uma mentira que custa um chamado de suporte por cliente atualizado.
+ */
+export async function acessoAoAppConcedido(): Promise<boolean> {
+  if (!browser.permissions?.contains) return true;
+
+  try {
+    return await browser.permissions.contains({
+      origins: [HOST_DO_APP],
+    } as Parameters<typeof browser.permissions.contains>[0]);
+  } catch {
+    // Sem como perguntar, seguimos e deixamos a leitura falhar por si.
+    return true;
+  }
+}
+
 /**
  * A permissão está DECLARADA no manifest e CONCEDIDA em runtime?
  *

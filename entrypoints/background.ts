@@ -6,7 +6,7 @@
  */
 import { conferirConfiguracao } from '../lib/config';
 import { listarDestinos, sincronizarConversas } from '../lib/conversas';
-import { atenderPonte } from '../lib/whatsapp-aba';
+import { atenderPonte, registrarAba } from '../lib/whatsapp-aba';
 import { consultarLead, criarLead } from '../lib/leads';
 import type {
   EstadoSessao,
@@ -17,7 +17,12 @@ import type {
   ResultadoSincronizacao,
   ResultadoCriacao,
 } from '../lib/mensagens';
-import { estaExpirada, lerSessaoDoApp } from '../lib/sessao';
+import {
+  HOST_DO_APP,
+  acessoAoAppConcedido,
+  estaExpirada,
+  lerSessaoDoApp,
+} from '../lib/sessao';
 import { clienteComSessao } from '../lib/supabase';
 
 type LinhaContexto = {
@@ -38,6 +43,13 @@ async function obterEstadoSessao(): Promise<EstadoSessao> {
   const erroConfiguracao = conferirConfiguracao();
   if (erroConfiguracao) {
     return { estado: 'erro', mensagem: erroConfiguracao };
+  }
+
+  // Permissão retida produz o mesmo sintoma de "sem login" — e dizer "faça
+  // login" a quem já está logado é o caminho curto para um chamado de
+  // suporte. Por isso a checagem vem ANTES da leitura.
+  if (!(await acessoAoAppConcedido())) {
+    return { estado: 'sem-permissao', host: HOST_DO_APP };
   }
 
   const { sessao, diagnostico } = await lerSessaoDoApp();
@@ -191,6 +203,13 @@ export default defineBackground(() => {
           } satisfies ResultadoDestinos);
         });
       return true;
+    }
+
+    if (mensagem?.tipo === 'whatsapp/registrar') {
+      const tabId = _remetente.tab?.id;
+      if (typeof tabId === 'number') void registrarAba(tabId);
+      responder(true);
+      return false;
     }
 
     if (mensagem?.tipo === 'ponte') {
